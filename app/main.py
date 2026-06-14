@@ -1,0 +1,43 @@
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+from app.config import APP_NAME
+from app.routers import calendar, dashboard, projects, tasks, todos
+from app.storage import vault
+
+
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+app = FastAPI(title=APP_NAME, version="0.1.0")
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+app.include_router(dashboard.router)
+app.include_router(calendar.router)
+app.include_router(tasks.router)
+app.include_router(todos.router)
+app.include_router(projects.router)
+
+
+@app.on_event("startup")
+def ensure_vault() -> None:
+    vault.ensure()
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "vault": str(vault.root)}
+
+
+@app.get("/", include_in_schema=False)
+def index():
+    return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/{page}", include_in_schema=False)
+def page(page: str):
+    if page in {"dashboard", "calendar", "tasks", "todos", "projects"}:
+        return FileResponse(STATIC_DIR / "index.html")
+    raise HTTPException(status_code=404, detail="not found")

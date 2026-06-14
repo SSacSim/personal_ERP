@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GAI ERP</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark">G</span>
+        <div>
+          <strong>GAI ERP</strong>
+          <span>Company workspace</span>
+        </div>
+      </div>
+      <nav class="nav" aria-label="ERP pages">
+        <a href="/dashboard" data-route="dashboard">대시보드</a>
+        <a href="/calendar" data-route="calendar">달력</a>
+        <a href="/tasks" data-route="tasks">작업바</a>
+        <a href="/todos" data-route="todos">TODO</a>
+        <a href="/projects" data-route="projects">프로젝트</a>
+      </nav>
+    </aside>
+
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Internal ERP</p>
+          <h1 id="page-title">대시보드</h1>
+        </div>
+        <div class="date-pill" id="today-label"></div>
+      </header>
+
+      <section id="view" class="view" aria-live="polite"></section>
+    </main>
+
+    <script src="/static/app.js" type="module"></script>
+  </body>
+</html>
