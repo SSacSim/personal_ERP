@@ -8,8 +8,10 @@ __pycache__/
 env/
 venv/
 *.log
+config.yaml
 
 # Keep the vault folder structure in Git without tracking generated notes.
 vault/**/*.md
+vault/Assets/**
 !vault/README.md
 !vault/**/.gitkeep

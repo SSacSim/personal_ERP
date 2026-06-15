@@ -16,10 +16,19 @@ FOLDERS = {
     "work_task": "Tasks",
     "todo": "Todos",
     "project": "Projects",
+    "meeting": "Meetings",
+    "wiki_page": "Wiki",
     "report": "Reports",
 }
 
 CHANGE_LOG_HEADING = "## 변경 로그"
+ASSET_CONTENT_TYPES = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+}
+MAX_ASSET_BYTES = 10 * 1024 * 1024
 ABSENCE_KEYWORDS = (
     "연차",
     "휴가",
@@ -165,6 +174,7 @@ class ObsidianVault:
         self.root.mkdir(parents=True, exist_ok=True)
         for folder in {*FOLDERS.values(), "Dashboard", "Wiki"}:
             (self.root / folder).mkdir(parents=True, exist_ok=True)
+        (self.root / "Assets").mkdir(parents=True, exist_ok=True)
         readme = self.root / "README.md"
         if not readme.exists():
             readme.write_text(
@@ -221,6 +231,39 @@ class ObsidianVault:
             path = self.folder_for(note_type) / filename
         path.write_text(render_note(metadata, body), encoding="utf-8")
         return self.read(path)
+
+    def save_asset(self, filename: str, content_type: str, content: bytes) -> dict[str, str]:
+        if content_type not in ASSET_CONTENT_TYPES:
+            raise ValueError("unsupported image type")
+        if len(content) > MAX_ASSET_BYTES:
+            raise ValueError("image is too large")
+        suffix = Path(filename).suffix.lower() or ASSET_CONTENT_TYPES[content_type]
+        if suffix not in set(ASSET_CONTENT_TYPES.values()) | {".jpeg"}:
+            suffix = ASSET_CONTENT_TYPES[content_type]
+        stem = slugify(Path(filename).stem, "image")
+        asset_dir = self.root / "Assets" / datetime.now().strftime("%Y-%m")
+        asset_dir.mkdir(parents=True, exist_ok=True)
+        asset_name = f"{uuid4().hex[:12]}-{stem}{suffix}"
+        path = asset_dir / asset_name
+        path.write_bytes(content)
+        asset_path = path.relative_to(self.root / "Assets").as_posix()
+        return {
+            "name": filename,
+            "path": asset_path,
+            "url": f"/api/assets/{asset_path}",
+            "content_type": content_type,
+        }
+
+    def asset_file(self, asset_path: str) -> Path | None:
+        assets_root = (self.root / "Assets").resolve()
+        target = (assets_root / asset_path).resolve()
+        try:
+            target.relative_to(assets_root)
+        except ValueError:
+            return None
+        if not target.is_file():
+            return None
+        return target
 
     def create_calendar_event(self, data: dict[str, Any]) -> dict[str, Any]:
         start_date = str(data.get("start_date") or data.get("date"))
@@ -540,8 +583,11 @@ class ObsidianVault:
     def create_project(self, data: dict[str, Any]) -> dict[str, Any]:
         goals = data.get("goals", [])
         links = data.get("links", [])
+        company_name = data.get("company_name") or ""
         body = [
             f"# {data['name']}",
+            "",
+            f"회사명: {company_name}" if company_name else "",
             "",
             data.get("summary", "").strip(),
             "",
@@ -553,6 +599,7 @@ class ObsidianVault:
         ]
         metadata = {
             "name": data["name"],
+            "company_name": company_name,
             "owner": data.get("owner") or "",
             "status": data.get("status", "active"),
             "start_date": str(data.get("start_date") or ""),
@@ -564,7 +611,7 @@ class ObsidianVault:
 
     def list_projects(self) -> list[dict[str, Any]]:
         items = [note.as_dict() for note in self.list_notes("project")]
-        return sorted(items, key=lambda item: (item.get("status", ""), item.get("name", "")))
+        return sorted(items, key=lambda item: (item.get("company_name", ""), item.get("name", "")))
 
     def update_project(self, project_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
         note = self.find_by_id("project", project_id)
@@ -579,6 +626,126 @@ class ObsidianVault:
         body = note.body if summary is None else body_with_replaced_content(note.body, name, summary)
         fields = [key for key, value in updates.items() if value is not None]
         return self.write("project", name, metadata, body, note.path, log_action="수정", log_fields=fields).as_dict()
+
+    def create_meeting(self, data: dict[str, Any]) -> dict[str, Any]:
+        attendees = data.get("attendees", [])
+        project_id = data.get("project_id") or ""
+        body = self.meeting_body(data)
+        metadata = {
+            "title": data["title"],
+            "date": str(data["date"]),
+            "project_id": project_id,
+            "start_time": data.get("start_time") or "",
+            "attendees": attendees,
+            "images": data.get("images", []),
+        }
+        return self.write("meeting", data["title"], metadata, body, log_action="등록").as_dict()
+
+    def list_meetings(self, project_id: str | None = None) -> list[dict[str, Any]]:
+        items = [note.as_dict() for note in self.list_notes("meeting") if note.metadata.get("deleted") is not True]
+        if project_id is not None:
+            items = [item for item in items if item.get("project_id") == project_id]
+        return sorted(items, key=lambda item: (item.get("date", ""), item.get("start_time", ""), item.get("created_at", "")), reverse=True)
+
+    def update_meeting(self, meeting_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
+        note = self.find_by_id("meeting", meeting_id)
+        if note is None or note.metadata.get("deleted") is True:
+            return None
+        metadata = dict(note.metadata)
+        for key in ["title", "date", "project_id", "start_time", "attendees", "images"]:
+            if key in updates and updates[key] is not None:
+                metadata[key] = str(updates[key]) if isinstance(updates[key], date) else updates[key]
+        title = str(metadata.get("title", "meeting"))
+        body = note.body
+        if any(key in updates for key in ["agenda", "notes", "attendees", "title"]):
+            payload = {
+                "title": title,
+                "attendees": metadata.get("attendees", []),
+                "agenda": updates.get("agenda", self.meeting_section(note.body, "안건")),
+                "notes": updates.get("notes", self.meeting_section(note.body, "회의 내용")),
+            }
+            body = self.meeting_body(payload)
+        fields = [key for key, value in updates.items() if value is not None]
+        return self.write("meeting", title, metadata, body, note.path, log_action="수정", log_fields=fields).as_dict()
+
+    def delete_meeting(self, meeting_id: str) -> dict[str, Any] | None:
+        note = self.find_by_id("meeting", meeting_id)
+        if note is None or note.metadata.get("deleted") is True:
+            return None
+        metadata = dict(note.metadata)
+        metadata["deleted"] = True
+        metadata["deleted_at"] = datetime.now().isoformat(timespec="seconds")
+        title = str(metadata.get("title", "meeting"))
+        return self.write("meeting", title, metadata, note.body, note.path, log_action="삭제").as_dict()
+
+    def meeting_body(self, data: dict[str, Any]) -> str:
+        attendees = data.get("attendees", [])
+        return "\n".join(
+            [
+                f"# {data['title']}",
+                "",
+                "## 참석자",
+                *[f"- {person}" for person in attendees],
+                "",
+                "## 안건",
+                data.get("agenda", "").strip(),
+                "",
+                "## 회의 내용",
+                data.get("notes", "").strip(),
+            ]
+        )
+
+    def meeting_section(self, body: str, heading: str) -> str:
+        content, _ = split_change_log(body)
+        match = re.search(rf"(?ms)^## {re.escape(heading)}\s*(.*?)(?=^## |\Z)", content)
+        if not match:
+            return ""
+        return match.group(1).strip()
+
+    def create_wiki_page(self, data: dict[str, Any]) -> dict[str, Any]:
+        project_id = data.get("project_id") or ""
+        body = f"# {data['title']}\n\n{data.get('content', '').strip()}"
+        metadata = {
+            "title": data["title"],
+            "project_id": project_id,
+            "category": data.get("category") or "General",
+            "tags": data.get("tags", []),
+            "images": data.get("images", []),
+        }
+        return self.write("wiki_page", data["title"], metadata, body, log_action="등록").as_dict()
+
+    def list_wiki_pages(self, project_id: str | None = None) -> list[dict[str, Any]]:
+        items = [note.as_dict() for note in self.list_notes("wiki_page") if note.metadata.get("deleted") is not True]
+        if project_id is not None:
+            items = [item for item in items if item.get("project_id") == project_id]
+        return sorted(items, key=lambda item: (item.get("updated_at", ""), item.get("title", "")), reverse=True)
+
+    def update_wiki_page(self, page_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
+        note = self.find_by_id("wiki_page", page_id)
+        if note is None or note.metadata.get("deleted") is True:
+            return None
+        metadata = dict(note.metadata)
+        for key in ["title", "project_id", "category", "tags", "images"]:
+            if key in updates and updates[key] is not None:
+                metadata[key] = updates[key]
+        title = str(metadata.get("title", "wiki"))
+        body = note.body
+        if "content" in updates and updates["content"] is not None:
+            body = body_with_replaced_content(note.body, title, str(updates["content"]))
+        elif "title" in updates and updates["title"] is not None:
+            body = body_with_replaced_content(note.body, title, re.sub(r"^# .*(\r?\n)+", "", split_change_log(note.body)[0]).strip())
+        fields = [key for key, value in updates.items() if value is not None]
+        return self.write("wiki_page", title, metadata, body, note.path, log_action="수정", log_fields=fields).as_dict()
+
+    def delete_wiki_page(self, page_id: str) -> dict[str, Any] | None:
+        note = self.find_by_id("wiki_page", page_id)
+        if note is None or note.metadata.get("deleted") is True:
+            return None
+        metadata = dict(note.metadata)
+        metadata["deleted"] = True
+        metadata["deleted_at"] = datetime.now().isoformat(timespec="seconds")
+        title = str(metadata.get("title", "wiki"))
+        return self.write("wiki_page", title, metadata, note.body, note.path, log_action="삭제").as_dict()
 
     def weekly_report(self, week_start: date) -> dict[str, Any]:
         week_end = week_start + timedelta(days=6)

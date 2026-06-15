@@ -8,6 +8,8 @@ const titles = {
   tasks: "작업 타임라인",
   todos: "TODO",
   projects: "프로젝트",
+  meetings: "회의록",
+  wiki: "Wiki",
 };
 
 let calendarMonth = startOfMonth(new Date());
@@ -18,6 +20,12 @@ let calendarEditEventId = null;
 let calendarPendingDeleteId = null;
 let todoEditingId = null;
 let todoPendingDeleteId = null;
+let selectedProjectId = null;
+let projectCreateDialogOpen = false;
+let projectDetailTab = "meetings";
+let selectedProjectResourceId = null;
+let projectResourceMode = "view";
+let activeRichEditor = null;
 
 todayLabel.textContent = toDateInputValue(new Date());
 
@@ -48,6 +56,14 @@ window.addEventListener("keydown", (event) => {
     todoEditingId = null;
     todoPendingDeleteId = null;
     renderTodos();
+  }
+  if (event.key === "Escape" && currentRoute() === "projects") {
+    if (projectCreateDialogOpen) {
+      projectCreateDialogOpen = false;
+      renderProjects();
+      return;
+    }
+    closeProjectDetailDialog();
   }
 });
 renderRoute(currentRoute());
@@ -83,6 +99,13 @@ function renderRoute(route) {
     todoEditingId = null;
     todoPendingDeleteId = null;
   }
+  if (route !== "projects") {
+    selectedProjectId = null;
+    projectCreateDialogOpen = false;
+    projectDetailTab = "meetings";
+    selectedProjectResourceId = null;
+    projectResourceMode = "view";
+  }
   document.querySelectorAll(".nav a").forEach((link) => {
     link.classList.toggle("active", link.dataset.route === route);
   });
@@ -95,6 +118,8 @@ function renderRoute(route) {
     tasks: renderTasks,
     todos: renderTodos,
     projects: renderProjects,
+    meetings: renderMeetings,
+    wiki: renderWiki,
   };
   renderers[route]().catch((error) => {
     view.innerHTML = `<div class="panel"><p class="empty">${escapeHtml(error.message)}</p></div>`;
@@ -494,52 +519,1026 @@ function todoQuickForm() {
 
 async function renderProjects() {
   const { items } = await api("/api/projects");
+  const selectedProject = items.find((item) => item.id === selectedProjectId);
+  if (selectedProjectId && !selectedProject) {
+    selectedProjectId = null;
+  }
+  const projectDetailDialog = selectedProject ? await projectWorkspaceDialog(selectedProject) : "";
+
+  view.innerHTML = `
+    <section class="panel">
+      <div class="section-head project-head">
+        <h2>프로젝트</h2>
+        <button class="add-button" type="button" data-project-add aria-label="프로젝트 추가">+</button>
+      </div>
+      ${projectCards(items)}
+    </section>
+    ${projectCreateDialogOpen ? projectCreateDialog() : ""}
+    ${projectDetailDialog}
+  `;
+
+  document.querySelector("[data-project-add]")?.addEventListener("click", () => {
+    projectCreateDialogOpen = true;
+    selectedProjectId = null;
+    renderProjects();
+  });
+  document.querySelectorAll("[data-project-open]").forEach((button) => {
+    button.addEventListener("click", () => {
+      selectedProjectId = button.dataset.projectOpen;
+      projectCreateDialogOpen = false;
+      projectDetailTab = "meetings";
+      selectedProjectResourceId = null;
+      projectResourceMode = "view";
+      renderProjects();
+    });
+  });
+  setupProjectCreateDialog();
+  setupProjectWorkspaceDialog(selectedProject);
+}
+
+async function projectWorkspaceDialog(project) {
+  const projectId = encodeURIComponent(project.id);
+  const [{ items: meetings }, { items: wikiPages }] = await Promise.all([api(`/api/meetings?project_id=${projectId}`), api(`/api/wiki?project_id=${projectId}`)]);
+  const items = projectDetailTab === "wiki" ? wikiPages : meetings;
+  if (projectResourceMode !== "new" && selectedProjectResourceId && !items.some((item) => item.id === selectedProjectResourceId)) {
+    selectedProjectResourceId = null;
+  }
+  if (projectResourceMode !== "new" && !selectedProjectResourceId && items.length) {
+    selectedProjectResourceId = items[0].id;
+  }
+  const selectedItem = items.find((item) => item.id === selectedProjectResourceId) || null;
+  return `
+    <div class="modal-backdrop" data-project-detail-close>
+      <div class="modal-dialog project-detail-dialog" role="dialog" aria-modal="true" aria-labelledby="project-detail-title">
+        <div class="modal-head project-detail-head">
+          <div>
+            <p class="eyebrow">${escapeHtml(project.company_name || "회사명 미지정")}</p>
+            <h2 id="project-detail-title">${escapeHtml(project.name)}</h2>
+          </div>
+          <div class="project-detail-actions">
+            <span class="badge">${escapeHtml(projectStatusLabel(project.status))}</span>
+            <button class="icon-button" type="button" data-project-detail-close aria-label="닫기">X</button>
+          </div>
+        </div>
+        <div class="project-dialog-body">
+          ${projectResourceTabs(meetings.length, wikiPages.length)}
+          <section class="project-resource-layout">
+            <aside class="project-resource-list">
+              <div class="section-head">
+                <h2>${projectDetailTab === "wiki" ? "Wiki" : "회의록"}</h2>
+                <button class="add-button small-add-button" type="button" data-project-resource-new aria-label="새 글 작성">+</button>
+              </div>
+              ${projectResourceList(items)}
+            </aside>
+            <section class="project-resource-detail">
+              ${projectResourceDetail(selectedItem)}
+            </section>
+          </section>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function setupProjectWorkspaceDialog(project) {
+  if (!project) {
+    return;
+  }
+  document.querySelector(".project-detail-dialog")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+  });
+  document.querySelectorAll("[data-project-detail-close]").forEach((control) => {
+    control.addEventListener("click", () => {
+      selectedProjectId = null;
+      selectedProjectResourceId = null;
+      projectResourceMode = "view";
+      renderProjects();
+    });
+  });
+  document.querySelectorAll("[data-project-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      projectDetailTab = button.dataset.projectTab;
+      selectedProjectResourceId = null;
+      projectResourceMode = "view";
+      renderProjects();
+    });
+  });
+  document.querySelectorAll("[data-project-resource-new]").forEach((button) => {
+    button.addEventListener("click", () => {
+      selectedProjectResourceId = null;
+      projectResourceMode = "new";
+      renderProjects();
+    });
+  });
+  document.querySelectorAll("[data-project-resource-id]").forEach((button) => {
+    button.addEventListener("click", () => {
+      selectedProjectResourceId = button.dataset.projectResourceId;
+      projectResourceMode = "view";
+      renderProjects();
+    });
+  });
+  document.querySelector("[data-project-resource-edit]")?.addEventListener("click", () => {
+    projectResourceMode = "edit";
+    renderProjects();
+  });
+  document.querySelector("[data-project-resource-cancel]")?.addEventListener("click", () => {
+    projectResourceMode = "view";
+    renderProjects();
+  });
+  document.querySelector("[data-project-resource-delete]")?.addEventListener("click", async () => {
+    if (!selectedProjectResourceId || !confirm("선택한 글을 삭제할까요?")) {
+      return;
+    }
+    const path = projectDetailTab === "wiki" ? `/api/wiki/${encodeURIComponent(selectedProjectResourceId)}` : `/api/meetings/${encodeURIComponent(selectedProjectResourceId)}`;
+    await api(path, { method: "DELETE" });
+    selectedProjectResourceId = null;
+    projectResourceMode = "view";
+    renderProjects();
+  });
+  setupInlineImageEditors(document.querySelector(".project-detail-dialog"));
+  document.querySelector("#project-resource-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const formEl = event.currentTarget;
+    syncRichTextEditors(formEl);
+    const form = new FormData(formEl);
+    const isEdit = projectResourceMode === "edit" && selectedProjectResourceId;
+    const isWiki = projectDetailTab === "wiki";
+    const bodyContent = String(form.get(isWiki ? "content" : "notes") || "");
+    const images = imagesReferencedInContent(uniqueImages([...existingFormImages(form), ...uploadedInlineImages(formEl)]), bodyContent);
+    const payload = isWiki
+      ? {
+          project_id: project.id,
+          title: form.get("title"),
+          category: form.get("category") || "General",
+          tags: splitList(form.get("tags")),
+          content: form.get("content") || "",
+          images,
+        }
+      : {
+          project_id: project.id,
+          title: form.get("title"),
+          date: form.get("date"),
+          start_time: emptyToNull(form.get("start_time")),
+          attendees: splitList(form.get("attendees")),
+          agenda: "",
+          notes: form.get("notes") || "",
+          images,
+        };
+    const path = isWiki
+      ? isEdit
+        ? `/api/wiki/${encodeURIComponent(selectedProjectResourceId)}`
+        : "/api/wiki"
+      : isEdit
+        ? `/api/meetings/${encodeURIComponent(selectedProjectResourceId)}`
+        : "/api/meetings";
+    const saved = await api(path, {
+      method: isEdit ? "PATCH" : "POST",
+      body: JSON.stringify(payload),
+    });
+    selectedProjectResourceId = saved.id;
+    projectResourceMode = "view";
+    renderProjects();
+  });
+}
+
+function closeProjectDetailDialog() {
+  if (selectedProjectId) {
+    selectedProjectId = null;
+    selectedProjectResourceId = null;
+    projectResourceMode = "view";
+    renderProjects();
+  }
+}
+
+function projectResourceTabs(meetingCount, wikiCount) {
+  return `
+    <div class="project-page-tabs" role="tablist" aria-label="프로젝트 자료">
+      <button class="project-page-tab ${projectDetailTab === "meetings" ? "active" : ""}" type="button" data-project-tab="meetings" role="tab" aria-selected="${projectDetailTab === "meetings"}">
+        회의록 <span>${meetingCount}</span>
+      </button>
+      <button class="project-page-tab ${projectDetailTab === "wiki" ? "active" : ""}" type="button" data-project-tab="wiki" role="tab" aria-selected="${projectDetailTab === "wiki"}">
+        Wiki <span>${wikiCount}</span>
+      </button>
+    </div>
+  `;
+}
+
+function projectResourceList(items) {
+  if (!items.length) {
+    return `<p class="empty">등록된 글이 없습니다.</p>`;
+  }
+  return `
+    <div class="resource-list">
+      ${items.map(projectResourceListItem).join("")}
+    </div>
+  `;
+}
+
+function projectResourceListItem(item) {
+  const isSelected = item.id === selectedProjectResourceId && projectResourceMode !== "new";
+  const meta = projectDetailTab === "wiki" ? [item.category || "General", formatDateTime(item.updated_at)].filter(Boolean).join(" · ") : [item.date, item.start_time || "시간 미정"].filter(Boolean).join(" · ");
+  return `
+    <button class="resource-list-item ${isSelected ? "active" : ""}" type="button" data-project-resource-id="${escapeHtml(item.id)}">
+      <strong>${escapeHtml(item.title)}</strong>
+      <span>${escapeHtml(meta)}</span>
+    </button>
+  `;
+}
+
+function projectResourceDetail(item) {
+  if (projectResourceMode === "new") {
+    return projectDetailTab === "wiki" ? wikiResourceForm() : meetingResourceForm();
+  }
+  if (projectResourceMode === "edit" && item) {
+    return projectDetailTab === "wiki" ? wikiResourceForm(item) : meetingResourceForm(item);
+  }
+  if (!item) {
+    return `
+      <div class="resource-empty">
+        <p class="empty">선택된 글이 없습니다.</p>
+        <button class="add-button small-add-button" type="button" data-project-resource-new aria-label="새 글 작성">+</button>
+      </div>
+    `;
+  }
+  return projectDetailTab === "wiki" ? wikiResourceView(item) : meetingResourceView(item);
+}
+
+function meetingResourceForm(item = null) {
+  const title = item?.title || "";
+  const attendees = Array.isArray(item?.attendees) ? item.attendees.join(", ") : "";
+  const images = resourceImages(item);
+  const submitLabel = item ? "회의록 수정" : "회의록 저장";
+  return `
+    <form class="form resource-form" id="project-resource-form">
+      <input name="existing_images" type="hidden" value="${escapeHtml(JSON.stringify(images))}" />
+      <label class="full">회의명<input name="title" required maxlength="140" value="${escapeHtml(title)}" placeholder="예: 킥오프 회의" /></label>
+      <label>일자<input name="date" type="date" required value="${escapeHtml(item?.date || toDateInputValue(new Date()))}" /></label>
+      <label>시작 시간<input name="start_time" type="time" value="${escapeHtml(item?.start_time || "")}" /></label>
+      <label class="full">참석자<input name="attendees" value="${escapeHtml(attendees)}" placeholder="쉼표 또는 줄바꿈으로 구분" /></label>
+      ${richTextEditor("notes", "회의 내용", meetingContentWithImages(item))}
+      <div class="resource-form-actions full">
+        ${item ? `<button class="secondary" type="button" data-project-resource-cancel>취소</button>` : ""}
+        <button type="submit">${submitLabel}</button>
+      </div>
+    </form>
+  `;
+}
+
+function wikiResourceForm(item = null) {
+  const tags = Array.isArray(item?.tags) ? item.tags.join(", ") : "";
+  const images = resourceImages(item);
+  const submitLabel = item ? "Wiki 수정" : "Wiki 저장";
+  return `
+    <form class="form resource-form" id="project-resource-form">
+      <input name="existing_images" type="hidden" value="${escapeHtml(JSON.stringify(images))}" />
+      <label class="full">문서 제목<input name="title" required maxlength="140" value="${escapeHtml(item?.title || "")}" placeholder="예: 고객사 운영 규칙" /></label>
+      <label>카테고리<input name="category" required maxlength="60" value="${escapeHtml(item?.category || "General")}" /></label>
+      <label>태그<input name="tags" value="${escapeHtml(tags)}" placeholder="쉼표 또는 줄바꿈으로 구분" /></label>
+      ${richTextEditor("content", "본문", noteContentWithImages(item))}
+      <div class="resource-form-actions full">
+        ${item ? `<button class="secondary" type="button" data-project-resource-cancel>취소</button>` : ""}
+        <button type="submit">${submitLabel}</button>
+      </div>
+    </form>
+  `;
+}
+
+function meetingResourceView(item) {
+  const attendees = Array.isArray(item.attendees) && item.attendees.length ? item.attendees.join(", ") : "없음";
+  return `
+    <article class="resource-reader">
+      <div class="resource-reader-actions">
+        <button class="secondary" type="button" data-project-resource-edit>수정</button>
+        <button class="danger-button" type="button" data-project-resource-delete>삭제</button>
+      </div>
+      <p class="eyebrow">회의록</p>
+      <h3>${escapeHtml(item.title)}</h3>
+      <dl class="resource-meta">
+        <dt>일자</dt><dd>${escapeHtml(item.date || "-")}</dd>
+        <dt>시간</dt><dd>${escapeHtml(item.start_time || "시간 미정")}</dd>
+        <dt>참석자</dt><dd>${escapeHtml(attendees)}</dd>
+      </dl>
+      ${resourceBlock("회의 내용", meetingContentWithImages(item))}
+    </article>
+  `;
+}
+
+function wikiResourceView(item) {
+  const tags = Array.isArray(item.tags) && item.tags.length ? item.tags.join(", ") : "없음";
+  return `
+    <article class="resource-reader">
+      <div class="resource-reader-actions">
+        <button class="secondary" type="button" data-project-resource-edit>수정</button>
+        <button class="danger-button" type="button" data-project-resource-delete>삭제</button>
+      </div>
+      <p class="eyebrow">Wiki</p>
+      <h3>${escapeHtml(item.title)}</h3>
+      <dl class="resource-meta">
+        <dt>카테고리</dt><dd>${escapeHtml(item.category || "General")}</dd>
+        <dt>태그</dt><dd>${escapeHtml(tags)}</dd>
+        <dt>수정</dt><dd>${escapeHtml(formatDateTime(item.updated_at))}</dd>
+      </dl>
+      ${resourceBlock("본문", noteContentWithImages(item))}
+    </article>
+  `;
+}
+
+function resourceBlock(title, content) {
+  const text = String(content || "").trim();
+  return `
+    <section class="resource-block">
+      <h4>${escapeHtml(title)}</h4>
+      ${text ? renderRichText(text) : `<p class="muted-inline">작성된 내용이 없습니다.</p>`}
+    </section>
+  `;
+}
+
+function meetingSection(item, heading) {
+  if (!item?.body) {
+    return "";
+  }
+  const content = splitEventBody(item.body).content;
+  const match = content.match(new RegExp(`(?:^|\\n)## ${escapeRegExp(heading)}\\s*([\\s\\S]*?)(?=\\n## |$)`));
+  return match ? match[1].trim().replace(/^- /gm, "") : "";
+}
+
+function notePlainContent(item) {
+  if (!item?.body) {
+    return "";
+  }
+  return splitEventBody(item.body)
+    .content.replace(/^# .*(\r?\n)+/, "")
+    .trim();
+}
+
+function meetingContentWithImages(item) {
+  return contentWithLegacyImages(meetingSection(item, "회의 내용"), resourceImages(item));
+}
+
+function noteContentWithImages(item) {
+  return contentWithLegacyImages(notePlainContent(item), resourceImages(item));
+}
+
+function contentWithLegacyImages(content, images) {
+  const text = String(content || "").trim();
+  const imageMarkdown = resourceImages({ images })
+    .filter((image) => !text.includes(image.url))
+    .map((image) => markdownImage(image))
+    .join("\n");
+  return [text, imageMarkdown].filter(Boolean).join("\n\n");
+}
+
+function listText(value) {
+  return Array.isArray(value) ? value.join("\n") : String(value || "");
+}
+
+function resourceImages(item) {
+  return Array.isArray(item?.images) ? item.images.filter((image) => image && image.url) : [];
+}
+
+function richTextEditor(name, label, value = "") {
+  const fieldId = `rich-${name}`;
+  return `
+    <div class="text-editor full" data-inline-editor="${escapeHtml(name)}">
+      <div class="text-editor-head">
+        <label for="${escapeHtml(fieldId)}">${escapeHtml(label)}</label>
+        <button class="secondary inline-image-button" type="button" data-inline-image-button="${escapeHtml(name)}">이미지 삽입</button>
+      </div>
+      <div id="${escapeHtml(fieldId)}" class="rich-editor-surface" contenteditable="true" role="textbox" aria-multiline="true" data-rich-editor="${escapeHtml(name)}">${richEditorHtml(value)}</div>
+      <textarea name="${escapeHtml(name)}" class="rich-editor-source" data-rich-source hidden>${escapeHtml(value)}</textarea>
+      <input class="inline-image-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple data-inline-image-input="${escapeHtml(name)}" />
+    </div>
+  `;
+}
+
+function setupInlineImageEditors(root = document) {
+  if (!root) {
+    return;
+  }
+  root.querySelectorAll("[data-rich-editor]").forEach((surface) => {
+    surface.addEventListener("focus", () => {
+      activeRichEditor = surface;
+    });
+    surface.addEventListener("click", () => {
+      activeRichEditor = surface;
+    });
+    surface.addEventListener("keyup", () => {
+      activeRichEditor = surface;
+    });
+    surface.addEventListener("input", () => {
+      syncRichTextEditor(surface);
+    });
+  });
+  root.addEventListener("click", (event) => {
+    const resizeButton = event.target.closest("[data-image-resize]");
+    if (resizeButton && root.contains(resizeButton)) {
+      const figure = resizeButton.closest(".editor-rich-image");
+      resizeEditorImage(figure, Number(resizeButton.dataset.imageResize || 0));
+      return;
+    }
+    const removeButton = event.target.closest("[data-image-remove]");
+    if (removeButton && root.contains(removeButton)) {
+      const figure = removeButton.closest(".editor-rich-image");
+      const surface = figure?.closest("[data-rich-editor]");
+      figure?.remove();
+      ensureEditorParagraph(surface);
+      syncRichTextEditor(surface);
+    }
+  });
+  root.querySelectorAll("[data-inline-image-button]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const editor = button.closest("[data-inline-editor]");
+      const surface = editor?.querySelector("[data-rich-editor]");
+      if (surface) {
+        activeRichEditor = surface;
+        surface.focus();
+      }
+      editor?.querySelector("[data-inline-image-input]")?.click();
+    });
+  });
+  root.querySelectorAll("[data-inline-image-input]").forEach((input) => {
+    input.addEventListener("change", async () => {
+      const editor = input.closest("[data-inline-editor]");
+      const surface = editor?.querySelector("[data-rich-editor]");
+      const button = editor?.querySelector("[data-inline-image-button]");
+      const files = [...(input.files || [])];
+      if (!surface || !files.length) {
+        return;
+      }
+      const buttonText = button?.textContent || "";
+      if (button) {
+        button.disabled = true;
+        button.textContent = "업로드 중";
+      }
+      try {
+        const images = await Promise.all(files.map(uploadImageFile));
+        appendUploadedInlineImages(input.form, images);
+        insertImagesIntoEditor(surface, images);
+      } catch (error) {
+        alert(error.message || "이미지를 업로드하지 못했습니다.");
+      } finally {
+        input.value = "";
+        if (button) {
+          button.disabled = false;
+          button.textContent = buttonText || "이미지 삽입";
+        }
+      }
+    });
+  });
+}
+
+function richEditorHtml(value) {
+  const html = renderRichEditorContent(value);
+  return html || "<p><br></p>";
+}
+
+function renderRichEditorContent(content) {
+  const text = String(content || "").trim();
+  if (!text) {
+    return "";
+  }
+  const imagePattern = /!\[([^\]]*)\]\(([^)\s]+)\)/g;
+  let html = "";
+  let lastIndex = 0;
+  let match;
+  while ((match = imagePattern.exec(text))) {
+    html += renderEditorTextBlocks(text.slice(lastIndex, match.index));
+    html += renderEditorImage(match[2], match[1]);
+    lastIndex = imagePattern.lastIndex;
+  }
+  html += renderEditorTextBlocks(text.slice(lastIndex));
+  return html;
+}
+
+function renderEditorTextBlocks(text) {
+  return String(text || "")
+    .split(/\n{2,}/)
+    .map((block) => block.trim())
+    .filter(Boolean)
+    .map((block) => `<p>${escapeHtml(block).replace(/\n/g, "<br>")}</p>`)
+    .join("");
+}
+
+function renderEditorImage(url, altSpec = "") {
+  const safeUrl = safeImageUrl(url);
+  if (!safeUrl) {
+    return renderEditorTextBlocks(`![${altSpec}](${url})`);
+  }
+  const { alt, width } = parseMarkdownImageAlt(altSpec);
+  return editorImageHtml({ name: alt, url: safeUrl, width });
+}
+
+function editorImageHtml(image) {
+  const safeUrl = safeImageUrl(image?.url);
+  if (!safeUrl) {
+    return "";
+  }
+  const width = clampImageWidth(image?.width);
+  const alt = markdownImageAlt(image?.name || image?.alt || "본문 이미지");
+  return `
+    <figure class="editor-rich-image" contenteditable="false" data-url="${escapeHtml(safeUrl)}" data-alt="${escapeHtml(alt)}" data-width="${width}">
+      <img src="${escapeHtml(safeUrl)}" alt="${escapeHtml(alt)}" style="width: ${width}%;" loading="lazy" />
+      <figcaption>${escapeHtml(alt)}</figcaption>
+      <div class="editor-image-controls">
+        <button class="secondary" type="button" data-image-resize="-10">축소</button>
+        <span>${width}%</span>
+        <button class="secondary" type="button" data-image-resize="10">확대</button>
+        <button class="danger-button" type="button" data-image-remove>삭제</button>
+      </div>
+    </figure>
+  `;
+}
+
+function insertImagesIntoEditor(surface, images) {
+  if (!surface) {
+    return;
+  }
+  const target = activeRichEditor === surface ? currentEditorBlock(surface) : null;
+  let anchor = target || surface.lastElementChild;
+  if (anchor?.matches?.(".editor-rich-image")) {
+    anchor = anchor.nextElementSibling || anchor;
+  }
+  images.forEach((image) => {
+    const node = htmlToElement(editorImageHtml(image));
+    if (!node) {
+      return;
+    }
+    if (anchor && anchor.parentElement === surface) {
+      anchor.after(node);
+    } else {
+      surface.append(node);
+    }
+    anchor = node;
+  });
+  const paragraph = document.createElement("p");
+  paragraph.append(document.createElement("br"));
+  if (anchor && anchor.parentElement === surface) {
+    anchor.after(paragraph);
+  } else {
+    surface.append(paragraph);
+  }
+  placeCaretIn(paragraph);
+  syncRichTextEditor(surface);
+}
+
+function htmlToElement(html) {
+  const template = document.createElement("template");
+  template.innerHTML = html.trim();
+  return template.content.firstElementChild;
+}
+
+function currentEditorBlock(surface) {
+  const selection = window.getSelection();
+  if (!selection?.rangeCount || !surface.contains(selection.anchorNode)) {
+    return null;
+  }
+  let node = selection.anchorNode;
+  if (node.nodeType === Node.TEXT_NODE) {
+    node = node.parentElement;
+  }
+  while (node && node.parentElement !== surface) {
+    node = node.parentElement;
+  }
+  return node || null;
+}
+
+function placeCaretIn(element) {
+  const range = document.createRange();
+  range.selectNodeContents(element);
+  range.collapse(false);
+  const selection = window.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+function resizeEditorImage(figure, delta) {
+  if (!figure) {
+    return;
+  }
+  const nextWidth = clampImageWidth(Number(figure.dataset.width || 100) + delta);
+  figure.dataset.width = String(nextWidth);
+  figure.querySelector("img")?.style.setProperty("width", `${nextWidth}%`);
+  const label = figure.querySelector(".editor-image-controls span");
+  if (label) {
+    label.textContent = `${nextWidth}%`;
+  }
+  syncRichTextEditor(figure.closest("[data-rich-editor]"));
+}
+
+function ensureEditorParagraph(surface) {
+  if (surface && !surface.textContent.trim() && !surface.querySelector(".editor-rich-image")) {
+    surface.innerHTML = "<p><br></p>";
+  }
+}
+
+function syncRichTextEditors(root = document) {
+  root.querySelectorAll("[data-rich-editor]").forEach(syncRichTextEditor);
+}
+
+function syncRichTextEditor(surface) {
+  if (!surface) {
+    return;
+  }
+  const wrapper = surface.closest("[data-inline-editor]");
+  const source = wrapper?.querySelector("[data-rich-source]");
+  if (source) {
+    source.value = richEditorToMarkdown(surface);
+  }
+}
+
+function richEditorToMarkdown(surface) {
+  const blocks = [];
+  surface.childNodes.forEach((node) => collectEditorMarkdown(node, blocks));
+  return blocks.join("\n\n").trim();
+}
+
+function collectEditorMarkdown(node, blocks) {
+  if (node.nodeType === Node.TEXT_NODE) {
+    const text = normalizeEditorText(node.textContent).trim();
+    if (text) {
+      blocks.push(text);
+    }
+    return;
+  }
+  if (node.nodeType !== Node.ELEMENT_NODE) {
+    return;
+  }
+  if (node.matches(".editor-rich-image")) {
+    blocks.push(markdownImage({ name: node.dataset.alt, url: node.dataset.url, width: Number(node.dataset.width || 100) }));
+    return;
+  }
+  if (node.matches(".editor-image-controls")) {
+    return;
+  }
+  if (node.matches("p, div")) {
+    const nestedImages = [...node.children].filter((child) => child.matches?.(".editor-rich-image"));
+    if (nestedImages.length) {
+      node.childNodes.forEach((child) => collectEditorMarkdown(child, blocks));
+      return;
+    }
+    const text = editorElementText(node).trim();
+    if (text) {
+      blocks.push(text);
+    }
+    return;
+  }
+  node.childNodes.forEach((child) => collectEditorMarkdown(child, blocks));
+}
+
+function editorElementText(element) {
+  let text = "";
+  element.childNodes.forEach((node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      text += node.textContent;
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE || node.matches(".editor-image-controls, .editor-rich-image")) {
+      return;
+    }
+    if (node.tagName === "BR") {
+      text += "\n";
+      return;
+    }
+    text += editorElementText(node);
+  });
+  return normalizeEditorText(text);
+}
+
+function normalizeEditorText(text) {
+  return String(text || "").replace(/\u00a0/g, " ");
+}
+
+function appendUploadedInlineImages(form, images) {
+  if (!form) {
+    return;
+  }
+  const current = uploadedInlineImages(form);
+  form.dataset.inlineImages = JSON.stringify(uniqueImages([...current, ...images]));
+}
+
+function uploadedInlineImages(form) {
+  try {
+    const parsed = JSON.parse(form?.dataset.inlineImages || "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function imagesReferencedInContent(images, content) {
+  const urls = new Set([...String(content || "").matchAll(/!\[[^\]]*\]\(([^)\s]+)\)/g)].map((match) => match[1]));
+  return uniqueImages(images).filter((image) => urls.has(image.url));
+}
+
+function uniqueImages(images) {
+  const seen = new Set();
+  return images.filter((image) => {
+    if (!image?.url || seen.has(image.url)) {
+      return false;
+    }
+    seen.add(image.url);
+    return true;
+  });
+}
+
+function markdownImageAlt(value) {
+  return String(value || "이미지").replace(/[\[\]\r\n]/g, " ").trim() || "이미지";
+}
+
+function markdownImage(image) {
+  const url = image?.url || "";
+  const alt = markdownImageAlt(image?.name || image?.alt || "이미지");
+  const width = clampImageWidth(image?.width);
+  const altSpec = width === 100 ? alt : `${alt}|${width}`;
+  return `![${altSpec}](${url})`;
+}
+
+function renderRichText(content) {
+  const text = String(content || "").trim();
+  if (!text) {
+    return "";
+  }
+  const imagePattern = /!\[([^\]]*)\]\(([^)\s]+)\)/g;
+  let html = "";
+  let lastIndex = 0;
+  let match;
+  while ((match = imagePattern.exec(text))) {
+    html += renderTextBlocks(text.slice(lastIndex, match.index));
+    html += renderInlineImage(match[2], match[1]);
+    lastIndex = imagePattern.lastIndex;
+  }
+  html += renderTextBlocks(text.slice(lastIndex));
+  return `<div class="rich-content">${html}</div>`;
+}
+
+function renderTextBlocks(text) {
+  return String(text || "")
+    .split(/\n{2,}/)
+    .map((block) => block.trim())
+    .filter(Boolean)
+    .map((block) => `<p>${escapeHtml(block).replace(/\n/g, "<br>")}</p>`)
+    .join("");
+}
+
+function renderInlineImage(url, altSpec = "") {
+  const safeUrl = safeImageUrl(url);
+  if (!safeUrl) {
+    return renderTextBlocks(`![${altSpec}](${url})`);
+  }
+  const { alt, width } = parseMarkdownImageAlt(altSpec);
+  const caption = String(alt || "").trim();
+  return `
+    <figure class="inline-rich-image" style="width: ${width}%;">
+      <a href="${escapeHtml(safeUrl)}" target="_blank" rel="noreferrer">
+        <img src="${escapeHtml(safeUrl)}" alt="${escapeHtml(caption || "본문 이미지")}" loading="lazy" />
+      </a>
+      ${caption ? `<figcaption>${escapeHtml(caption)}</figcaption>` : ""}
+    </figure>
+  `;
+}
+
+function parseMarkdownImageAlt(value) {
+  const raw = String(value || "").trim();
+  const match = raw.match(/^(.*)\|(\d{1,3})$/);
+  if (!match) {
+    return { alt: raw, width: 100 };
+  }
+  return {
+    alt: markdownImageAlt(match[1] || "이미지"),
+    width: clampImageWidth(Number(match[2])),
+  };
+}
+
+function clampImageWidth(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return 100;
+  }
+  return Math.max(20, Math.min(100, Math.round(number / 10) * 10));
+}
+
+function safeImageUrl(url) {
+  const value = String(url || "").trim();
+  if (/^\/api\/assets\//.test(value) || /^https?:\/\//i.test(value)) {
+    return value;
+  }
+  return "";
+}
+
+function existingFormImages(form) {
+  try {
+    const parsed = JSON.parse(String(form.get("existing_images") || "[]"));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+async function uploadImageFile(file) {
+  if (!file.type.startsWith("image/")) {
+    throw new Error("이미지 파일만 첨부할 수 있습니다.");
+  }
+  const dataUrl = await fileToDataUrl(file);
+  return api("/api/assets", {
+    method: "POST",
+    body: JSON.stringify({
+      filename: file.name,
+      content_type: file.type,
+      data_url: dataUrl,
+    }),
+  });
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => {
+      if (typeof reader.result === "string") {
+        resolve(reader.result);
+        return;
+      }
+      reject(new Error("이미지를 읽지 못했습니다."));
+    });
+    reader.addEventListener("error", () => reject(reader.error || new Error("이미지를 읽지 못했습니다.")));
+    reader.readAsDataURL(file);
+  });
+}
+
+function projectCards(items) {
+  if (!items.length) {
+    return `<p class="empty">등록된 프로젝트가 없습니다.</p>`;
+  }
+  return `
+    <div class="project-card-grid">
+      ${items.map(projectCard).join("")}
+    </div>
+  `;
+}
+
+function projectCard(item) {
+  const company = item.company_name || "회사명 미지정";
+  const status = projectStatusLabel(item.status);
+  return `
+    <button class="project-card" type="button" data-project-open="${escapeHtml(item.id)}">
+      <span>${escapeHtml(company)}</span>
+      <strong>${escapeHtml(item.name)}</strong>
+      <small>${escapeHtml(status)}</small>
+    </button>
+  `;
+}
+
+function projectCreateDialog() {
+  return `
+    <div class="modal-backdrop" data-project-create-cancel>
+      <div class="modal-dialog project-create-dialog" role="dialog" aria-modal="true" aria-labelledby="project-create-title">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">프로젝트 생성</p>
+            <h2 id="project-create-title">새 프로젝트</h2>
+          </div>
+          <button class="icon-button" type="button" data-project-create-cancel aria-label="닫기">X</button>
+        </div>
+        <div class="project-dialog-body">
+          <form class="form" id="project-create-form">
+            <label class="full">회사명<input name="company_name" required maxlength="120" autocomplete="off" /></label>
+            <label class="full">프로젝트명<input name="name" required maxlength="120" autocomplete="off" /></label>
+            <button class="full" type="submit">프로젝트 저장</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function setupProjectCreateDialog() {
+  if (!projectCreateDialogOpen) {
+    return;
+  }
+  document.querySelector(".project-create-dialog")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+  });
+  document.querySelectorAll("[data-project-create-cancel]").forEach((control) => {
+    control.addEventListener("click", () => {
+      projectCreateDialogOpen = false;
+      renderProjects();
+    });
+  });
+  document.querySelector("#project-create-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const created = await api("/api/projects", {
+      method: "POST",
+      body: JSON.stringify({
+        company_name: form.get("company_name"),
+        name: form.get("name"),
+        status: "active",
+        summary: "",
+        goals: [],
+        links: [],
+      }),
+    });
+    selectedProjectId = created.id;
+    projectCreateDialogOpen = false;
+    projectDetailTab = "meetings";
+    selectedProjectResourceId = null;
+    projectResourceMode = "view";
+    renderProjects();
+  });
+  document.querySelector("#project-create-form input[name='company_name']")?.focus();
+}
+
+async function renderMeetings() {
+  const { items } = await api("/api/meetings");
+  const today = toDateInputValue(new Date());
   view.innerHTML = `
     <section class="grid two">
       <div class="panel">
-        <h2>진행 프로젝트</h2>
-        ${rows(items, projectSummary)}
+        <div class="section-head">
+          <h2>최근 회의록</h2>
+          <span class="badge">${items.length}건</span>
+        </div>
+        ${rows(items, meetingSummary)}
       </div>
       <div class="panel">
-        <h2>프로젝트 기록</h2>
-        <form class="form" id="project-form">
-          <label class="full">프로젝트명<input name="name" required maxlength="120" /></label>
-          <label>담당자<input name="owner" /></label>
-          <label>상태
-            <select name="status">
-              <option value="active">진행</option>
-              <option value="planning">기획</option>
-              <option value="paused">보류</option>
-              <option value="done">완료</option>
-            </select>
-          </label>
-          <label>시작일<input name="start_date" type="date" /></label>
-          <label>종료일<input name="end_date" type="date" /></label>
-          <label class="full">요약<textarea name="summary"></textarea></label>
-          <label class="full">목표<textarea name="goals" placeholder="줄바꿈 또는 쉼표로 구분"></textarea></label>
-          <label class="full">링크<textarea name="links" placeholder="줄바꿈 또는 쉼표로 구분"></textarea></label>
-          <button class="full" type="submit">프로젝트 저장</button>
+        <h2>회의록 작성</h2>
+        <form class="form" id="meeting-form">
+          <label class="full">회의명<input name="title" required maxlength="140" placeholder="예: 주간 운영 회의" /></label>
+          <label>일자<input name="date" type="date" required value="${today}" /></label>
+          <label>시작 시간<input name="start_time" type="time" /></label>
+          <label class="full">참석자<input name="attendees" placeholder="쉼표 또는 줄바꿈으로 구분" /></label>
+          <label class="full">안건<textarea name="agenda"></textarea></label>
+          ${richTextEditor("notes", "회의 내용")}
+          <button class="full" type="submit">회의록 저장</button>
         </form>
       </div>
     </section>
   `;
-  document.querySelector("#project-form").addEventListener("submit", async (event) => {
+  setupInlineImageEditors(document.querySelector("#meeting-form"));
+  document.querySelector("#meeting-form").addEventListener("submit", async (event) => {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    await api("/api/projects", {
+    const formEl = event.currentTarget;
+    syncRichTextEditors(formEl);
+    const form = new FormData(formEl);
+    const notes = form.get("notes") || "";
+    const images = imagesReferencedInContent(uploadedInlineImages(formEl), notes);
+    await api("/api/meetings", {
       method: "POST",
       body: JSON.stringify({
-        name: form.get("name"),
-        owner: emptyToNull(form.get("owner")),
-        status: form.get("status"),
-        start_date: emptyToNull(form.get("start_date")),
-        end_date: emptyToNull(form.get("end_date")),
-        summary: form.get("summary") || "",
-        goals: splitList(form.get("goals")),
-        links: splitList(form.get("links")),
+        title: form.get("title"),
+        date: form.get("date"),
+        start_time: emptyToNull(form.get("start_time")),
+        attendees: splitList(form.get("attendees")),
+        agenda: form.get("agenda") || "",
+        notes,
+        images,
       }),
     });
-    renderProjects();
+    renderMeetings();
+  });
+}
+
+async function renderWiki() {
+  const { items } = await api("/api/wiki");
+  view.innerHTML = `
+    <section class="grid two">
+      <div class="panel">
+        <div class="section-head">
+          <h2>Wiki 문서</h2>
+          <span class="badge">${items.length}건</span>
+        </div>
+        ${rows(items, wikiSummary)}
+      </div>
+      <div class="panel">
+        <h2>Wiki 작성</h2>
+        <form class="form" id="wiki-form">
+          <label class="full">문서 제목<input name="title" required maxlength="140" placeholder="예: 배포 절차" /></label>
+          <label>카테고리<input name="category" required maxlength="60" value="General" /></label>
+          <label>태그<input name="tags" placeholder="쉼표 또는 줄바꿈으로 구분" /></label>
+          ${richTextEditor("content", "본문")}
+          <button class="full" type="submit">Wiki 저장</button>
+        </form>
+      </div>
+    </section>
+  `;
+  setupInlineImageEditors(document.querySelector("#wiki-form"));
+  document.querySelector("#wiki-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const formEl = event.currentTarget;
+    syncRichTextEditors(formEl);
+    const form = new FormData(formEl);
+    const content = form.get("content") || "";
+    const images = imagesReferencedInContent(uploadedInlineImages(formEl), content);
+    await api("/api/wiki", {
+      method: "POST",
+      body: JSON.stringify({
+        title: form.get("title"),
+        category: form.get("category") || "General",
+        tags: splitList(form.get("tags")),
+        content,
+        images,
+      }),
+    });
+    renderWiki();
   });
 }
 
@@ -597,7 +1596,29 @@ function taskSummary(item) {
 }
 
 function projectSummary(item) {
-  return `<div class="row-main"><strong>${escapeHtml(item.name)}</strong><span>${escapeHtml(item.owner || "담당자 미정")} · ${escapeHtml(projectStatusLabel(item.status))}</span></div><span class="badge">${escapeHtml(item.path || "vault")}</span>`;
+  const meta = [item.company_name || "회사명 미지정", item.owner || "", projectStatusLabel(item.status)].filter(Boolean).join(" · ");
+  return `<div class="row-main"><strong>${escapeHtml(item.name)}</strong><span>${escapeHtml(meta)}</span></div><span class="badge">${escapeHtml(item.path || "vault")}</span>`;
+}
+
+function meetingSummary(item) {
+  const attendees = Array.isArray(item.attendees) ? item.attendees.join(", ") : "";
+  const meta = [item.date, item.start_time, attendees || "참석자 미정"].filter(Boolean).join(" · ");
+  return `<div class="row-main"><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(meta)}</span></div><span class="badge">${escapeHtml(item.path || "회의록")}</span>`;
+}
+
+function wikiSummary(item) {
+  const tags = Array.isArray(item.tags) && item.tags.length ? item.tags.join(", ") : "";
+  const preview = notePreview(item);
+  const meta = [item.category || "General", tags].filter(Boolean).join(" · ");
+  return `<div class="row-main"><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(meta)}</span>${preview ? `<p class="note-preview">${escapeHtml(preview)}</p>` : ""}</div><span class="badge">${escapeHtml(String(item.updated_at || "").slice(0, 10) || "Wiki")}</span>`;
+}
+
+function notePreview(item) {
+  return splitEventBody(item.body)
+    .content.replace(/^# .*(\r?\n)+/, "")
+    .replace(/!\[[^\]]*\]\([^)]+\)/g, "")
+    .trim()
+    .slice(0, 140);
 }
 
 function todoLine(item) {
@@ -1112,7 +2133,12 @@ function calendarEventDetail(item) {
 }
 
 function projectOptions(projects) {
-  return projects.map((project) => `<option value="${escapeHtml(project.id)}">${escapeHtml(project.name)}</option>`).join("");
+  return projects
+    .map((project) => {
+      const label = project.company_name ? `${project.company_name} / ${project.name}` : project.name;
+      return `<option value="${escapeHtml(project.id)}">${escapeHtml(label)}</option>`;
+    })
+    .join("");
 }
 
 function groupBy(items, key) {
@@ -1289,4 +2315,8 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

@@ -5,7 +5,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import APP_NAME
-from app.routers import calendar, dashboard, projects, tasks, todos
+from app.routers import assets, calendar, dashboard, meetings, projects, tasks, todos, wiki
 from app.storage import vault
 
 
@@ -19,6 +19,9 @@ app.include_router(calendar.router)
 app.include_router(tasks.router)
 app.include_router(todos.router)
 app.include_router(projects.router)
+app.include_router(meetings.router)
+app.include_router(wiki.router)
+app.include_router(assets.router)
 
 
 @app.on_event("startup")
@@ -38,6 +41,6 @@ def index():
 
 @app.get("/{page}", include_in_schema=False)
 def page(page: str):
-    if page in {"dashboard", "calendar", "tasks", "todos", "projects"}:
+    if page in {"dashboard", "calendar", "tasks", "todos", "projects", "meetings", "wiki"}:
         return FileResponse(STATIC_DIR / "index.html")
     raise HTTPException(status_code=404, detail="not found")

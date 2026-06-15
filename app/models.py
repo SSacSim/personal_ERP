@@ -109,6 +109,7 @@ class TodoReorder(BaseModel):
 
 class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
+    company_name: str | None = Field(default=None, max_length=120)
     owner: str | None = None
     status: ProjectStatus = "active"
     start_date: Date | None = None
@@ -120,6 +121,7 @@ class ProjectCreate(BaseModel):
 
 class ProjectUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
+    company_name: str | None = Field(default=None, max_length=120)
     owner: str | None = None
     status: ProjectStatus | None = None
     start_date: Date | None = None
@@ -127,3 +129,49 @@ class ProjectUpdate(BaseModel):
     summary: str | None = None
     goals: list[str] | None = None
     links: list[str] | None = None
+
+
+class MeetingCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=140)
+    date: Date
+    project_id: str | None = None
+    start_time: str | None = None
+    attendees: list[str] = Field(default_factory=list)
+    agenda: str = ""
+    notes: str = ""
+    images: list[dict[str, str]] = Field(default_factory=list)
+
+
+class MeetingUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=140)
+    date: Date | None = None
+    project_id: str | None = None
+    start_time: str | None = None
+    attendees: list[str] | None = None
+    agenda: str | None = None
+    notes: str | None = None
+    images: list[dict[str, str]] | None = None
+
+
+class WikiPageCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=140)
+    project_id: str | None = None
+    category: str = Field(default="General", min_length=1, max_length=60)
+    tags: list[str] = Field(default_factory=list)
+    content: str = ""
+    images: list[dict[str, str]] = Field(default_factory=list)
+
+
+class WikiPageUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=140)
+    project_id: str | None = None
+    category: str | None = Field(default=None, min_length=1, max_length=60)
+    tags: list[str] | None = None
+    content: str | None = None
+    images: list[dict[str, str]] | None = None
+
+
+class AssetUpload(BaseModel):
+    filename: str = Field(min_length=1, max_length=180)
+    content_type: str = Field(min_length=1, max_length=80)
+    data_url: str = Field(min_length=1)

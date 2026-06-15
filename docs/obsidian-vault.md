@@ -8,7 +8,9 @@
 - `vault/Todos`: 일별 TODO 노트
 - `vault/Projects`: 프로젝트 노트
 - `vault/Reports`: 주간 보고서
+- `vault/Meetings`: 회의록 노트
 - `vault/Wiki`: 프로젝트 목표, 운영 규칙, 의사결정 기록
+- `vault/Assets`: 회의록과 Wiki 첨부 이미지
 
 ## 노트 형식
 
