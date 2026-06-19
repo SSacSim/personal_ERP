@@ -5,7 +5,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import APP_NAME
-from app.routers import assets, calendar, dashboard, meetings, projects, tasks, todos, wiki
+from app.routers import assets, calendar, chat, dashboard, meetings, project_files, project_records, projects, tasks, todos, wiki
 from app.storage import vault
 
 
@@ -20,8 +20,11 @@ app.include_router(tasks.router)
 app.include_router(todos.router)
 app.include_router(projects.router)
 app.include_router(meetings.router)
+app.include_router(project_files.router)
+app.include_router(project_records.router)
 app.include_router(wiki.router)
 app.include_router(assets.router)
+app.include_router(chat.router)
 
 
 @app.on_event("startup")

@@ -15,3 +15,9 @@ vault/**/*.md
 vault/Assets/**
 !vault/README.md
 !vault/**/.gitkeep
+
+# Ignore uploaded project files while keeping upload folder placeholders.
+vault/Files/Uploads/**
+!vault/Files/Uploads/
+!vault/Files/Uploads/**/
+!vault/Files/Uploads/**/.gitkeep

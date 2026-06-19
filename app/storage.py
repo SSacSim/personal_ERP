@@ -18,6 +18,8 @@ FOLDERS = {
     "project": "Projects",
     "meeting": "Meetings",
     "wiki_page": "Wiki",
+    "project_file": "Files",
+    "project_record": "Records",
     "report": "Reports",
 }
 
@@ -29,6 +31,8 @@ ASSET_CONTENT_TYPES = {
     "image/webp": ".webp",
 }
 MAX_ASSET_BYTES = 10 * 1024 * 1024
+MAX_PROJECT_FILE_BYTES = 50 * 1024 * 1024
+DEFAULT_FILE_CONTENT_TYPE = "application/octet-stream"
 ABSENCE_KEYWORDS = (
     "연차",
     "휴가",
@@ -152,6 +156,28 @@ def todo_body_content(existing_body: str) -> str:
     return re.sub(r"^# .*(\r?\n)+", "", content).strip()
 
 
+def project_body_with_metadata(existing_body: str, title: str, company_name: str) -> str:
+    content, existing_log = split_change_log(existing_body)
+    content = re.sub(r"^# .*(\r?\n)+", "", content).strip()
+    lines = content.splitlines()
+    company_name = company_name.strip()
+    if lines and lines[0].startswith("회사명:"):
+        if company_name:
+            lines[0] = f"회사명: {company_name}"
+        else:
+            lines = lines[1:]
+            if lines and not lines[0].strip():
+                lines = lines[1:]
+    elif company_name:
+        lines = [f"회사명: {company_name}", ""] + lines
+
+    body_content = "\n".join(lines).strip()
+    base = f"# {title}\n\n{body_content}".strip()
+    if not existing_log:
+        return base
+    return "\n\n".join([base, CHANGE_LOG_HEADING, existing_log]).strip()
+
+
 @dataclass
 class Note:
     metadata: dict[str, Any]
@@ -264,6 +290,81 @@ class ObsidianVault:
         if not target.is_file():
             return None
         return target
+
+    def save_project_file(self, data: dict[str, Any], content: bytes) -> dict[str, Any]:
+        if len(content) > MAX_PROJECT_FILE_BYTES:
+            raise ValueError("file is too large")
+        original_name = Path(str(data.get("filename") or "file")).name or "file"
+        content_type = str(data.get("content_type") or DEFAULT_FILE_CONTENT_TYPE).strip() or DEFAULT_FILE_CONTENT_TYPE
+        content_type = content_type[:160]
+        file_id = uuid4().hex
+        stem = slugify(Path(original_name).stem, "file")
+        suffix = re.sub(r"[^A-Za-z0-9.]+", "", Path(original_name).suffix)[:24]
+        if suffix in {"", "."} or not suffix.startswith("."):
+            suffix = ""
+        upload_dir = self.folder_for("project_file") / "Uploads" / datetime.now().strftime("%Y-%m")
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        (upload_dir.parent / ".gitkeep").touch(exist_ok=True)
+        (upload_dir / ".gitkeep").touch(exist_ok=True)
+        stored_name = f"{file_id[:12]}-{stem}{suffix}"
+        path = upload_dir / stored_name
+        path.write_bytes(content)
+        file_path = path.relative_to(self.folder_for("project_file")).as_posix()
+        metadata = {
+            "id": file_id,
+            "title": original_name,
+            "project_id": data.get("project_id") or "",
+            "filename": original_name,
+            "content_type": content_type,
+            "size": len(content),
+            "file_path": file_path,
+            "url": f"/api/project-files/{file_id}/download",
+        }
+        body = "\n".join(
+            [
+                f"# {original_name}",
+                "",
+                f"- 파일명: {original_name}",
+                f"- 크기: {len(content)} bytes",
+                f"- 형식: {content_type}",
+            ]
+        )
+        return self.write("project_file", original_name, metadata, body, log_action="업로드").as_dict()
+
+    def list_project_files(self, project_id: str | None = None) -> list[dict[str, Any]]:
+        items = [note.as_dict() for note in self.list_notes("project_file") if note.metadata.get("deleted") is not True]
+        if project_id is not None:
+            items = [item for item in items if item.get("project_id") == project_id]
+        for item in items:
+            if item.get("id"):
+                item["url"] = f"/api/project-files/{item['id']}/download"
+        return sorted(items, key=lambda item: (item.get("updated_at", ""), item.get("filename", "")), reverse=True)
+
+    def project_file(self, file_id: str) -> tuple[Path, dict[str, Any]] | None:
+        note = self.find_by_id("project_file", file_id)
+        if note is None or note.metadata.get("deleted") is True:
+            return None
+        files_root = self.folder_for("project_file").resolve()
+        target = (files_root / str(note.metadata.get("file_path") or "")).resolve()
+        try:
+            target.relative_to(files_root)
+        except ValueError:
+            return None
+        if not target.is_file():
+            return None
+        metadata = dict(note.metadata)
+        metadata["url"] = f"/api/project-files/{file_id}/download"
+        return target, metadata
+
+    def delete_project_file(self, file_id: str) -> dict[str, Any] | None:
+        note = self.find_by_id("project_file", file_id)
+        if note is None or note.metadata.get("deleted") is True:
+            return None
+        metadata = dict(note.metadata)
+        metadata["deleted"] = True
+        metadata["deleted_at"] = datetime.now().isoformat(timespec="seconds")
+        title = str(metadata.get("title") or metadata.get("filename") or "file")
+        return self.write("project_file", title, metadata, note.body, note.path, log_action="삭제").as_dict()
 
     def create_calendar_event(self, data: dict[str, Any]) -> dict[str, Any]:
         start_date = str(data.get("start_date") or data.get("date"))
@@ -623,7 +724,17 @@ class ObsidianVault:
                 metadata[key] = str(value) if isinstance(value, date) else value
         name = str(metadata.get("name", "project"))
         summary = updates.get("summary")
-        body = note.body if summary is None else body_with_replaced_content(note.body, name, summary)
+        if summary is None:
+            should_refresh_body_header = bool({"name", "company_name"} & set(updates))
+            if should_refresh_body_header:
+                body = project_body_with_metadata(note.body, name, str(metadata.get("company_name") or ""))
+            else:
+                body = note.body
+        else:
+            company_name = str(metadata.get("company_name") or "").strip()
+            content_parts = [f"회사명: {company_name}" if company_name else "", str(summary).strip()]
+            content = "\n\n".join([part for part in content_parts if part])
+            body = body_with_replaced_content(note.body, name, content)
         fields = [key for key, value in updates.items() if value is not None]
         return self.write("project", name, metadata, body, note.path, log_action="수정", log_fields=fields).as_dict()
 
@@ -701,6 +812,50 @@ class ObsidianVault:
         if not match:
             return ""
         return match.group(1).strip()
+
+    def create_project_record(self, data: dict[str, Any]) -> dict[str, Any]:
+        project_id = data.get("project_id") or ""
+        body = f"# {data['title']}\n\n{data.get('content', '').strip()}"
+        metadata = {
+            "title": data["title"],
+            "project_id": project_id,
+            "images": data.get("images", []),
+        }
+        return self.write("project_record", data["title"], metadata, body, log_action="등록").as_dict()
+
+    def list_project_records(self, project_id: str | None = None) -> list[dict[str, Any]]:
+        items = [note.as_dict() for note in self.list_notes("project_record") if note.metadata.get("deleted") is not True]
+        if project_id is not None:
+            items = [item for item in items if item.get("project_id") == project_id]
+        return sorted(items, key=lambda item: (item.get("updated_at", ""), item.get("title", "")), reverse=True)
+
+    def update_project_record(self, record_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
+        note = self.find_by_id("project_record", record_id)
+        if note is None or note.metadata.get("deleted") is True:
+            return None
+        metadata = dict(note.metadata)
+        for key in ["title", "project_id", "images"]:
+            if key in updates and updates[key] is not None:
+                metadata[key] = updates[key]
+        title = str(metadata.get("title", "record"))
+        body = note.body
+        if "content" in updates and updates["content"] is not None:
+            body = body_with_replaced_content(note.body, title, str(updates["content"]))
+        elif "title" in updates and updates["title"] is not None:
+            content = re.sub(r"^# .*(\r?\n)+", "", split_change_log(note.body)[0]).strip()
+            body = body_with_replaced_content(note.body, title, content)
+        fields = [key for key, value in updates.items() if value is not None]
+        return self.write("project_record", title, metadata, body, note.path, log_action="수정", log_fields=fields).as_dict()
+
+    def delete_project_record(self, record_id: str) -> dict[str, Any] | None:
+        note = self.find_by_id("project_record", record_id)
+        if note is None or note.metadata.get("deleted") is True:
+            return None
+        metadata = dict(note.metadata)
+        metadata["deleted"] = True
+        metadata["deleted_at"] = datetime.now().isoformat(timespec="seconds")
+        title = str(metadata.get("title", "record"))
+        return self.write("project_record", title, metadata, note.body, note.path, log_action="삭제").as_dict()
 
     def create_wiki_page(self, data: dict[str, Any]) -> dict[str, Any]:
         project_id = data.get("project_id") or ""
@@ -794,8 +949,19 @@ class ObsidianVault:
 
     def dashboard(self, target_date: date) -> dict[str, Any]:
         self.rollover_todos(target_date)
+        tomorrow = target_date + timedelta(days=1)
         todos = self.list_todos(target_date)
         events = self.list_calendar_events(target_date=target_date)
+        tomorrow_events = self.list_calendar_events(target_date=tomorrow)
+        all_meetings = self.list_meetings()
+        meetings = sorted(
+            [meeting for meeting in all_meetings if meeting.get("date") == target_date.isoformat()],
+            key=lambda item: (item.get("start_time", ""), item.get("title", "")),
+        )
+        tomorrow_meetings = sorted(
+            [meeting for meeting in all_meetings if meeting.get("date") == tomorrow.isoformat()],
+            key=lambda item: (item.get("start_time", ""), item.get("title", "")),
+        )
         tasks = self.list_tasks()
         active_tasks = [
             task
@@ -804,21 +970,45 @@ class ObsidianVault:
         ]
         projects = [project for project in self.list_projects() if project.get("status") == "active"]
         absences = self.dashboard_absences(events)
+        tomorrow_absences = self.dashboard_absences(tomorrow_events)
         absence_people = {item.get("person") for item in absences if item.get("person") and item.get("person") != "대상 미지정"}
+        tomorrow_absence_people = {item.get("person") for item in tomorrow_absences if item.get("person") and item.get("person") != "대상 미지정"}
         return {
             "date": target_date.isoformat(),
+            "tomorrow": tomorrow.isoformat(),
             "counts": {
                 "todos_total": len(todos),
                 "todos_done": len([todo for todo in todos if todo.get("completed") is True]),
                 "events_today": len(events),
+                "events_tomorrow": len(tomorrow_events),
+                "meetings_today": len(meetings),
+                "meetings_tomorrow": len(tomorrow_meetings),
                 "absence_people": len(absence_people) if absence_people else len(absences),
+                "absence_people_tomorrow": len(tomorrow_absence_people) if tomorrow_absence_people else len(tomorrow_absences),
                 "absence_events": len({item.get("event_id") for item in absences if item.get("event_id")}),
+                "absence_events_tomorrow": len({item.get("event_id") for item in tomorrow_absences if item.get("event_id")}),
                 "active_tasks": len(active_tasks),
                 "active_projects": len(projects),
             },
+            "today": {
+                "date": target_date.isoformat(),
+                "events": events,
+                "absences": absences,
+                "meetings": meetings,
+            },
+            "tomorrow_day": {
+                "date": tomorrow.isoformat(),
+                "events": tomorrow_events,
+                "absences": tomorrow_absences,
+                "meetings": tomorrow_meetings,
+            },
             "todos": todos,
             "events": events,
+            "tomorrow_events": tomorrow_events,
             "absences": absences,
+            "tomorrow_absences": tomorrow_absences,
+            "meetings": meetings,
+            "tomorrow_meetings": tomorrow_meetings,
             "active_tasks": active_tasks,
             "projects": projects,
         }

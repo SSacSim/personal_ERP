@@ -171,7 +171,32 @@ class WikiPageUpdate(BaseModel):
     images: list[dict[str, str]] | None = None
 
 
+class ProjectRecordCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=140)
+    project_id: str | None = None
+    content: str = ""
+    images: list[dict[str, str]] = Field(default_factory=list)
+
+
+class ProjectRecordUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=140)
+    project_id: str | None = None
+    content: str | None = None
+    images: list[dict[str, str]] | None = None
+
+
 class AssetUpload(BaseModel):
     filename: str = Field(min_length=1, max_length=180)
     content_type: str = Field(min_length=1, max_length=80)
     data_url: str = Field(min_length=1)
+
+
+class ProjectFileUpload(BaseModel):
+    project_id: str | None = None
+    filename: str = Field(min_length=1, max_length=240)
+    content_type: str = Field(default="application/octet-stream", min_length=1, max_length=160)
+    data_url: str = Field(min_length=1)
+
+
+class ChatQuestion(BaseModel):
+    question: str = Field(min_length=1, max_length=1000)

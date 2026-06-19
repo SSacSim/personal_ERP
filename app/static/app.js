@@ -25,9 +25,23 @@ let projectCreateDialogOpen = false;
 let projectDetailTab = "meetings";
 let selectedProjectResourceId = null;
 let projectResourceMode = "view";
+let projectInfoEditOpen = false;
 let activeRichEditor = null;
+let activeImageResize = null;
+let chatWidgetOpen = false;
+let chatSending = false;
+const chatMessages = [
+  {
+    role: "bot",
+    text: "저장된 Obsidian 노트를 기준으로 답변합니다. 궁금한 내용을 입력해주세요.",
+    time: new Date().toISOString(),
+  },
+];
+const collapsedTaskGroups = new Set();
+const TASK_GANTT_DAY_WIDTH = 52;
 
 todayLabel.textContent = toDateInputValue(new Date());
+setupChatWidget();
 
 document.querySelectorAll(".nav a").forEach((link) => {
   link.addEventListener("click", (event) => {
@@ -40,6 +54,11 @@ document.querySelectorAll(".nav a").forEach((link) => {
 
 window.addEventListener("popstate", () => renderRoute(currentRoute()));
 window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && chatWidgetOpen) {
+    chatWidgetOpen = false;
+    renderChatWidget();
+    return;
+  }
   if (event.key === "Escape" && calendarDialogDate && currentRoute() === "calendar") {
     if (calendarPendingDeleteId) {
       calendarPendingDeleteId = null;
@@ -58,6 +77,11 @@ window.addEventListener("keydown", (event) => {
     renderTodos();
   }
   if (event.key === "Escape" && currentRoute() === "projects") {
+    if (projectInfoEditOpen) {
+      projectInfoEditOpen = false;
+      renderProjects();
+      return;
+    }
     if (projectCreateDialogOpen) {
       projectCreateDialogOpen = false;
       renderProjects();
@@ -67,6 +91,144 @@ window.addEventListener("keydown", (event) => {
   }
 });
 renderRoute(currentRoute());
+
+function setupChatWidget() {
+  const widget = document.createElement("section");
+  widget.className = "chat-widget";
+  widget.setAttribute("aria-label", "노트 상담봇");
+  document.body.appendChild(widget);
+  renderChatWidget();
+}
+
+function renderChatWidget() {
+  const widget = document.querySelector(".chat-widget");
+  if (!widget) {
+    return;
+  }
+  const panelHtml = chatWidgetOpen
+    ? `
+      <div class="chat-panel open">
+        <div class="chat-panel-head">
+          <div>
+            <strong>노트 상담봇</strong>
+            <span>Obsidian 저장 내용을 기반으로 답변합니다</span>
+          </div>
+          <button class="chat-close" type="button" data-chat-close aria-label="채팅 닫기">X</button>
+        </div>
+        <div class="chat-messages" data-chat-messages>
+          ${chatMessages.map(chatMessageHtml).join("")}
+        </div>
+        <form class="chat-form" data-chat-form>
+          <input name="message" autocomplete="off" placeholder="저장된 내용에 대해 질문하세요" ${chatSending ? "disabled" : ""} />
+          <button type="submit" ${chatSending ? "disabled" : ""}>${chatSending ? "확인중" : "전송"}</button>
+        </form>
+      </div>
+    `
+    : "";
+  widget.innerHTML = `
+    ${panelHtml}
+    <button class="chat-launcher ${chatWidgetOpen ? "active" : ""}" type="button" data-chat-toggle aria-label="${chatWidgetOpen ? "채팅 닫기" : "상담 채팅 열기"}">
+      <span class="chat-launcher-icon" aria-hidden="true"></span>
+    </button>
+  `;
+
+  widget.querySelector("[data-chat-toggle]")?.addEventListener("click", () => {
+    chatWidgetOpen = !chatWidgetOpen;
+    renderChatWidget();
+  });
+  widget.querySelector("[data-chat-close]")?.addEventListener("click", () => {
+    chatWidgetOpen = false;
+    renderChatWidget();
+  });
+  widget.querySelector("[data-chat-form]")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (chatSending) {
+      return;
+    }
+    const form = event.currentTarget;
+    const input = form.elements.message;
+    const text = String(input.value || "").trim();
+    if (!text) {
+      input.focus();
+      return;
+    }
+    chatMessages.push({ role: "user", text, time: new Date().toISOString() });
+    const pendingMessage = {
+      role: "bot",
+      text: "저장된 노트를 확인하는 중입니다.",
+      time: new Date().toISOString(),
+      pending: true,
+    };
+    chatMessages.push(pendingMessage);
+    chatSending = true;
+    renderChatWidget();
+    try {
+      const reply = await api("/api/chat/ask", {
+        method: "POST",
+        body: JSON.stringify({ question: text }),
+      });
+      Object.assign(pendingMessage, {
+        text: reply.answer || "답변을 생성하지 못했습니다.",
+        time: new Date().toISOString(),
+        pending: false,
+        mode: reply.mode || "",
+      });
+      if (reply.mode === "codex_sdk_error") {
+        try {
+          pendingMessage.auth = await api("/api/chat/auth/start", { method: "POST" });
+          pendingMessage.text = `${pendingMessage.text}\n\n아래 링크로 Codex 인증을 완료한 뒤 같은 질문을 다시 보내주세요.`;
+        } catch (authError) {
+          pendingMessage.text = `${pendingMessage.text}\n\n인증 링크 생성도 실패했습니다. ${authError.message}`;
+        }
+      }
+    } catch (error) {
+      Object.assign(pendingMessage, {
+        text: `답변 생성 중 오류가 발생했습니다. ${error.message}`,
+        time: new Date().toISOString(),
+        pending: false,
+        sources: [],
+      });
+    } finally {
+      chatSending = false;
+      renderChatWidget();
+    }
+  });
+
+  const messages = widget.querySelector("[data-chat-messages]");
+  if (messages) {
+    messages.scrollTop = messages.scrollHeight;
+  }
+  if (chatWidgetOpen) {
+    widget.querySelector(".chat-form input")?.focus();
+  }
+}
+
+function chatMessageHtml(message) {
+  const isUser = message.role === "user";
+  const auth = message.auth || null;
+  return `
+    <div class="chat-message ${isUser ? "user" : "bot"} ${message.pending ? "pending" : ""}">
+      <p>${escapeHtml(message.text)}</p>
+      ${
+        auth?.auth_url
+          ? `<div class="chat-auth">
+              <a href="${escapeHtml(auth.auth_url)}" target="_blank" rel="noreferrer">Codex 인증하기</a>
+              <span>${escapeHtml(auth.expires_at ? `${auth.expires_at}까지 유효` : "새 창에서 인증을 완료하세요")}</span>
+            </div>`
+          : ""
+      }
+      <time>${escapeHtml(formatChatTime(message.time))}</time>
+    </div>
+  `;
+}
+
+function formatChatTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
 
 function currentRoute() {
   const route = location.pathname.replace("/", "") || "dashboard";
@@ -105,6 +267,7 @@ function renderRoute(route) {
     projectDetailTab = "meetings";
     selectedProjectResourceId = null;
     projectResourceMode = "view";
+    projectInfoEditOpen = false;
   }
   document.querySelectorAll(".nav a").forEach((link) => {
     link.classList.toggle("active", link.dataset.route === route);
@@ -130,38 +293,43 @@ async function renderDashboard() {
   const today = toDateInputValue(new Date());
   const data = await api(`/api/dashboard?date=${today}`);
   const counts = data.counts;
+  const todayData = data.today || { date: data.date, absences: data.absences || [], meetings: data.meetings || [], events: data.events || [] };
+  const tomorrowData = data.tomorrow_day || { date: data.tomorrow, absences: data.tomorrow_absences || [], meetings: data.tomorrow_meetings || [], events: data.tomorrow_events || [] };
   view.innerHTML = `
     <section class="stats">
       ${stat("오늘 TODO", `${counts.todos_done}/${counts.todos_total}`)}
-      ${stat("오늘 일정", counts.events_today)}
       ${stat("오늘 부재", `${counts.absence_people || 0}명`)}
+      ${stat("내일 부재", `${counts.absence_people_tomorrow || 0}명`)}
+      ${stat("오늘 회의", counts.meetings_today || 0)}
+      ${stat("내일 회의", counts.meetings_tomorrow || 0)}
       ${stat("진행 작업", counts.active_tasks)}
       ${stat("진행 프로젝트", counts.active_projects)}
     </section>
-    <section class="grid two">
-      <div class="panel">
-        <div class="section-head">
-          <h2>오늘 휴가/부재 현황</h2>
-          <span class="badge">${counts.absence_events || 0}건</span>
-        </div>
-        ${absenceOverview(data.absences || [])}
+    <section class="dashboard-day-grid">
+      ${dashboardDayPanel("오늘", todayData, counts.absence_events || 0)}
+      ${dashboardDayPanel("내일", tomorrowData, counts.absence_events_tomorrow || 0)}
+    </section>
+    <section class="panel dashboard-calendar-panel">
+      <div class="section-head">
+        <h2>캘린더 일정</h2>
+        <span class="badge">오늘 ${counts.events_today || 0}건 · 내일 ${counts.events_tomorrow || 0}건</span>
       </div>
-      <div class="panel">
-        <h2>오늘 일정</h2>
-        ${rows(data.events, eventSummary)}
+      <div class="dashboard-schedule-grid">
+        ${dashboardScheduleBlock("오늘 일정", todayData.events || [])}
+        ${dashboardScheduleBlock("내일 일정", tomorrowData.events || [])}
       </div>
     </section>
-    <section class="grid two">
-      <div class="panel">
+    <section class="grid two dashboard-bottom-grid">
+      <div class="panel dashboard-list-panel">
         <h2>오늘 할 일</h2>
         ${rows(data.todos, todoSummary)}
       </div>
-      <div class="panel">
+      <div class="panel dashboard-list-panel">
         <h2>현재 작업</h2>
         ${rows(data.active_tasks, taskSummary)}
       </div>
     </section>
-    <section class="panel">
+    <section class="panel dashboard-list-panel dashboard-project-panel">
       <h2>진행 프로젝트</h2>
       ${rows(data.projects, projectSummary)}
     </section>
@@ -318,43 +486,79 @@ async function renderCalendar() {
 
 async function renderTasks() {
   const [{ items: tasks }, { items: projects }] = await Promise.all([api("/api/tasks"), api("/api/projects")]);
+  const today = toDateInputValue(new Date());
   view.innerHTML = `
-    <section class="grid two">
-      <div class="panel">
-        <h2>작업바</h2>
-        ${timeline(tasks)}
+    <section class="panel task-board-panel">
+      <div class="task-board-head">
+        <div>
+          <p class="eyebrow">Gantt</p>
+          <h2>작업바</h2>
+        </div>
+        <span class="badge">${tasks.length}개 작업 · 오늘 ${today}</span>
       </div>
-      <div class="panel">
+      ${taskGantt(tasks, projects)}
+    </section>
+    <section class="panel task-create-panel">
+      <div class="section-head">
         <h2>작업 등록</h2>
-        <form class="form" id="task-form">
-          <label class="full">작업명<input name="title" required maxlength="140" placeholder="JIRA 이슈처럼 등록" /></label>
-          <label>시작일<input name="start_date" type="date" required value="${toDateInputValue(new Date())}" /></label>
-          <label>종료일<input name="end_date" type="date" required value="${toDateInputValue(new Date())}" /></label>
-          <label>프로젝트<select name="project_id"><option value="">미지정</option>${projectOptions(projects)}</select></label>
-          <label>담당자<input name="owner" placeholder="담당자명" /></label>
-          <label>상태
-            <select name="status">
-              <option value="todo">대기</option>
-              <option value="in_progress">진행</option>
-              <option value="review">리뷰</option>
-              <option value="blocked">막힘</option>
-              <option value="done">완료</option>
-            </select>
-          </label>
-          <label>우선순위
-            <select name="priority">
-              <option value="normal">보통</option>
-              <option value="high">높음</option>
-              <option value="urgent">긴급</option>
-              <option value="low">낮음</option>
-            </select>
-          </label>
-          <label class="full">설명<textarea name="description"></textarea></label>
-          <button class="full" type="submit">작업 저장</button>
-        </form>
       </div>
+      <form class="form task-create-form" id="task-form">
+        <label class="full">작업명<input name="title" required maxlength="140" placeholder="작업 이름" /></label>
+        <label>시작일<input name="start_date" type="date" required value="${today}" /></label>
+        <label>종료일<input name="end_date" type="date" required value="${today}" /></label>
+        <label>프로젝트<select name="project_id"><option value="">미지정</option>${projectOptions(projects)}</select></label>
+        <label>담당자<input name="owner" placeholder="담당자명" /></label>
+        <label>상태
+          <select name="status">
+            <option value="todo">대기</option>
+            <option value="in_progress">진행</option>
+            <option value="review">리뷰</option>
+            <option value="blocked">막힘</option>
+            <option value="done">완료</option>
+          </select>
+        </label>
+        <label>우선순위
+          <select name="priority">
+            <option value="normal">보통</option>
+            <option value="high">높음</option>
+            <option value="urgent">긴급</option>
+            <option value="low">낮음</option>
+          </select>
+        </label>
+        <label class="full">설명<textarea name="description"></textarea></label>
+        <button class="full" type="submit">작업 저장</button>
+      </form>
     </section>
   `;
+  document.querySelectorAll("[data-task-group-toggle]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const groupId = button.dataset.taskGroupToggle;
+      if (!groupId) {
+        return;
+      }
+      if (collapsedTaskGroups.has(groupId)) {
+        collapsedTaskGroups.delete(groupId);
+      } else {
+        collapsedTaskGroups.add(groupId);
+      }
+      renderTasks();
+    });
+  });
+  document.querySelectorAll("[data-task-done]").forEach((checkbox) => {
+    checkbox.addEventListener("change", async () => {
+      await api(`/api/tasks/${encodeURIComponent(checkbox.dataset.taskDone)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status: checkbox.checked ? "done" : "in_progress" }),
+      });
+      renderTasks();
+    });
+  });
+  document.querySelector("#task-form input[name='start_date']")?.addEventListener("change", (event) => {
+    const endDate = document.querySelector("#task-form input[name='end_date']");
+    if (endDate && endDate.value < event.currentTarget.value) {
+      endDate.value = event.currentTarget.value;
+    }
+  });
   document.querySelector("#task-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -540,6 +744,7 @@ async function renderProjects() {
   document.querySelector("[data-project-add]")?.addEventListener("click", () => {
     projectCreateDialogOpen = true;
     selectedProjectId = null;
+    projectInfoEditOpen = false;
     renderProjects();
   });
   document.querySelectorAll("[data-project-open]").forEach((button) => {
@@ -549,6 +754,7 @@ async function renderProjects() {
       projectDetailTab = "meetings";
       selectedProjectResourceId = null;
       projectResourceMode = "view";
+      projectInfoEditOpen = false;
       renderProjects();
     });
   });
@@ -558,12 +764,19 @@ async function renderProjects() {
 
 async function projectWorkspaceDialog(project) {
   const projectId = encodeURIComponent(project.id);
-  const [{ items: meetings }, { items: wikiPages }] = await Promise.all([api(`/api/meetings?project_id=${projectId}`), api(`/api/wiki?project_id=${projectId}`)]);
-  const items = projectDetailTab === "wiki" ? wikiPages : meetings;
+  const [{ items: meetings }, { items: projectFiles }, { items: projectRecords }] = await Promise.all([
+    api(`/api/meetings?project_id=${projectId}`),
+    api(`/api/project-files?project_id=${projectId}`),
+    api(`/api/project-records?project_id=${projectId}`),
+  ]);
+  const items = projectItemsForTab(projectDetailTab, { meetings, projectFiles, projectRecords });
   if (projectResourceMode !== "new" && selectedProjectResourceId && !items.some((item) => item.id === selectedProjectResourceId)) {
     selectedProjectResourceId = null;
+    if (projectDetailTab === "records") {
+      projectResourceMode = "view";
+    }
   }
-  if (projectResourceMode !== "new" && !selectedProjectResourceId && items.length) {
+  if (projectDetailTab !== "records" && projectResourceMode !== "new" && !selectedProjectResourceId && items.length) {
     selectedProjectResourceId = items[0].id;
   }
   const selectedItem = items.find((item) => item.id === selectedProjectResourceId) || null;
@@ -576,25 +789,33 @@ async function projectWorkspaceDialog(project) {
             <h2 id="project-detail-title">${escapeHtml(project.name)}</h2>
           </div>
           <div class="project-detail-actions">
+            <button class="secondary" type="button" data-project-info-edit>프로젝트 수정</button>
             <span class="badge">${escapeHtml(projectStatusLabel(project.status))}</span>
             <button class="icon-button" type="button" data-project-detail-close aria-label="닫기">X</button>
           </div>
         </div>
         <div class="project-dialog-body">
-          ${projectResourceTabs(meetings.length, wikiPages.length)}
-          <section class="project-resource-layout">
-            <aside class="project-resource-list">
-              <div class="section-head">
-                <h2>${projectDetailTab === "wiki" ? "Wiki" : "회의록"}</h2>
-                <button class="add-button small-add-button" type="button" data-project-resource-new aria-label="새 글 작성">+</button>
-              </div>
-              ${projectResourceList(items)}
-            </aside>
-            <section class="project-resource-detail">
-              ${projectResourceDetail(selectedItem)}
-            </section>
-          </section>
+          ${projectResourceTabs(meetings.length, projectFiles.length, projectRecords.length)}
+          ${
+            projectDetailTab === "records"
+              ? projectRecordWorkspace(projectRecords, projectResourceMode === "edit" ? selectedItem : null)
+              : `
+                <section class="project-resource-layout">
+                  <aside class="project-resource-list">
+                    <div class="section-head">
+                      <h2>${projectResourceLabel()}</h2>
+                      <button class="add-button small-add-button" type="button" data-project-resource-new aria-label="${projectDetailTab === "files" ? "파일 업로드" : "새 글 작성"}">+</button>
+                    </div>
+                    ${projectResourceList(items)}
+                  </aside>
+                  <section class="project-resource-detail">
+                    ${projectResourceDetail(selectedItem)}
+                  </section>
+                </section>
+              `
+          }
         </div>
+        ${projectInfoEditOpen ? projectInfoEditDialog(project) : ""}
       </div>
     </div>
   `;
@@ -612,6 +833,7 @@ function setupProjectWorkspaceDialog(project) {
       selectedProjectId = null;
       selectedProjectResourceId = null;
       projectResourceMode = "view";
+      projectInfoEditOpen = false;
       renderProjects();
     });
   });
@@ -625,6 +847,10 @@ function setupProjectWorkspaceDialog(project) {
   });
   document.querySelectorAll("[data-project-resource-new]").forEach((button) => {
     button.addEventListener("click", () => {
+      if (projectDetailTab === "files") {
+        document.querySelector("[data-project-file-input]")?.click();
+        return;
+      }
       selectedProjectResourceId = null;
       projectResourceMode = "new";
       renderProjects();
@@ -637,6 +863,19 @@ function setupProjectWorkspaceDialog(project) {
       renderProjects();
     });
   });
+  document.querySelector("[data-project-info-edit]")?.addEventListener("click", () => {
+    projectInfoEditOpen = true;
+    renderProjects();
+  });
+  document.querySelector(".project-info-edit-dialog")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+  });
+  document.querySelectorAll("[data-project-info-cancel]").forEach((control) => {
+    control.addEventListener("click", () => {
+      projectInfoEditOpen = false;
+      renderProjects();
+    });
+  });
   document.querySelector("[data-project-resource-edit]")?.addEventListener("click", () => {
     projectResourceMode = "edit";
     renderProjects();
@@ -646,33 +885,91 @@ function setupProjectWorkspaceDialog(project) {
     renderProjects();
   });
   document.querySelector("[data-project-resource-delete]")?.addEventListener("click", async () => {
-    if (!selectedProjectResourceId || !confirm("선택한 글을 삭제할까요?")) {
+    const isFile = projectDetailTab === "files";
+    const isRecord = projectDetailTab === "records";
+    const confirmText = isFile ? "선택한 자료를 삭제할까요?" : isRecord ? "선택한 기록을 삭제할까요?" : "선택한 글을 삭제할까요?";
+    if (!selectedProjectResourceId || !confirm(confirmText)) {
       return;
     }
-    const path = projectDetailTab === "wiki" ? `/api/wiki/${encodeURIComponent(selectedProjectResourceId)}` : `/api/meetings/${encodeURIComponent(selectedProjectResourceId)}`;
+    const path = isFile
+      ? `/api/project-files/${encodeURIComponent(selectedProjectResourceId)}`
+      : isRecord
+        ? `/api/project-records/${encodeURIComponent(selectedProjectResourceId)}`
+        : `/api/meetings/${encodeURIComponent(selectedProjectResourceId)}`;
     await api(path, { method: "DELETE" });
     selectedProjectResourceId = null;
     projectResourceMode = "view";
     renderProjects();
   });
+  document.querySelectorAll("[data-project-record-edit]").forEach((button) => {
+    button.addEventListener("click", () => {
+      selectedProjectResourceId = button.dataset.projectRecordEdit;
+      projectResourceMode = "edit";
+      renderProjects();
+    });
+  });
+  document.querySelectorAll("[data-project-record-delete]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (!confirm("선택한 기록을 삭제할까요?")) {
+        return;
+      }
+      await api(`/api/project-records/${encodeURIComponent(button.dataset.projectRecordDelete)}`, { method: "DELETE" });
+      if (selectedProjectResourceId === button.dataset.projectRecordDelete) {
+        selectedProjectResourceId = null;
+        projectResourceMode = "view";
+      }
+      renderProjects();
+    });
+  });
+  document.querySelector("#project-info-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const name = String(form.get("name") || "").trim();
+    if (!name) {
+      event.currentTarget.querySelector("input[name='name']")?.focus();
+      return;
+    }
+    const updated = await api(`/api/projects/${encodeURIComponent(project.id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        company_name: String(form.get("company_name") || "").trim(),
+        name,
+        owner: String(form.get("owner") || "").trim(),
+        status: form.get("status") || "active",
+      }),
+    });
+    selectedProjectId = updated.id;
+    projectInfoEditOpen = false;
+    renderProjects();
+  });
+  if (projectInfoEditOpen) {
+    document.querySelector("#project-info-form input[name='company_name']")?.focus();
+  }
+  setupResourceListScroller(document.querySelector(".project-detail-dialog"));
+  setupProjectFileUpload(project);
   setupInlineImageEditors(document.querySelector(".project-detail-dialog"));
   document.querySelector("#project-resource-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (projectDetailTab === "files") {
+      return;
+    }
     const formEl = event.currentTarget;
     syncRichTextEditors(formEl);
     const form = new FormData(formEl);
     const isEdit = projectResourceMode === "edit" && selectedProjectResourceId;
-    const isWiki = projectDetailTab === "wiki";
-    const bodyContent = String(form.get(isWiki ? "content" : "notes") || "");
+    const isRecord = projectDetailTab === "records";
+    const bodyContent = String(form.get(isRecord ? "content" : "notes") || "");
+    if (isRecord && !bodyContent.trim()) {
+      formEl.querySelector("[name='content']")?.focus();
+      return;
+    }
     const images = imagesReferencedInContent(uniqueImages([...existingFormImages(form), ...uploadedInlineImages(formEl)]), bodyContent);
-    const payload = isWiki
+    const payload = isRecord
       ? {
           project_id: project.id,
-          title: form.get("title"),
-          category: form.get("category") || "General",
-          tags: splitList(form.get("tags")),
+          title: projectRecordTitleFromContent(bodyContent),
           content: form.get("content") || "",
-          images,
+          images: [],
         }
       : {
           project_id: project.id,
@@ -684,10 +981,10 @@ function setupProjectWorkspaceDialog(project) {
           notes: form.get("notes") || "",
           images,
         };
-    const path = isWiki
+    const path = isRecord
       ? isEdit
-        ? `/api/wiki/${encodeURIComponent(selectedProjectResourceId)}`
-        : "/api/wiki"
+        ? `/api/project-records/${encodeURIComponent(selectedProjectResourceId)}`
+        : "/api/project-records"
       : isEdit
         ? `/api/meetings/${encodeURIComponent(selectedProjectResourceId)}`
         : "/api/meetings";
@@ -706,18 +1003,173 @@ function closeProjectDetailDialog() {
     selectedProjectId = null;
     selectedProjectResourceId = null;
     projectResourceMode = "view";
+    projectInfoEditOpen = false;
     renderProjects();
   }
 }
 
-function projectResourceTabs(meetingCount, wikiCount) {
+function setupProjectFileUpload(project) {
+  if (projectDetailTab !== "files") {
+    return;
+  }
+  const dropzone = document.querySelector("[data-project-file-dropzone]");
+  const input = document.querySelector("[data-project-file-input]");
+  if (!dropzone || !input) {
+    return;
+  }
+  const uploadSelectedFiles = async (files) => {
+    const selectedFiles = [...(files || [])].filter(Boolean);
+    if (!selectedFiles.length) {
+      return;
+    }
+    dropzone.classList.add("is-uploading");
+    try {
+      const savedItems = [];
+      for (const file of selectedFiles) {
+        savedItems.push(await uploadProjectFile(project.id, file));
+      }
+      const lastSaved = savedItems[savedItems.length - 1];
+      selectedProjectResourceId = lastSaved?.id || selectedProjectResourceId;
+      projectResourceMode = "view";
+      await renderProjects();
+    } catch (error) {
+      alert(error.message || "파일 업로드에 실패했습니다.");
+    } finally {
+      dropzone.classList.remove("is-uploading", "is-drag-over");
+    }
+  };
+
+  dropzone.addEventListener("click", (event) => {
+    if (event.target === input) {
+      return;
+    }
+    input.click();
+  });
+  dropzone.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      input.click();
+    }
+  });
+  input.addEventListener("change", async () => {
+    await uploadSelectedFiles(input.files);
+    input.value = "";
+  });
+  ["dragenter", "dragover"].forEach((eventName) => {
+    dropzone.addEventListener(eventName, (event) => {
+      event.preventDefault();
+      dropzone.classList.add("is-drag-over");
+    });
+  });
+  ["dragleave", "drop"].forEach((eventName) => {
+    dropzone.addEventListener(eventName, (event) => {
+      event.preventDefault();
+      dropzone.classList.remove("is-drag-over");
+    });
+  });
+  dropzone.addEventListener("drop", async (event) => {
+    await uploadSelectedFiles(event.dataTransfer?.files);
+  });
+}
+
+async function uploadProjectFile(projectId, file) {
+  const dataUrl = await fileToDataUrl(file);
+  return api("/api/project-files", {
+    method: "POST",
+    body: JSON.stringify({
+      project_id: projectId,
+      filename: file.name || "file",
+      content_type: file.type || "application/octet-stream",
+      data_url: dataUrl,
+    }),
+  });
+}
+
+function setupResourceListScroller(root = document) {
+  const scroller = root?.querySelector("[data-resource-list-scroll]");
+  const button = root?.querySelector("[data-resource-scroll-jump]");
+  if (!scroller || !button) {
+    return;
+  }
+  const update = () => {
+    const maxScroll = scroller.scrollHeight - scroller.clientHeight;
+    const hasMore = maxScroll > 2;
+    button.classList.toggle("is-hidden", !hasMore);
+    if (!hasMore) {
+      return;
+    }
+    const atBottom = scroller.scrollTop >= maxScroll - 2;
+    button.dataset.resourceScrollDirection = atBottom ? "top" : "down";
+    button.textContent = atBottom ? "↑" : "↓";
+    button.setAttribute("aria-label", atBottom ? "맨 위로 이동" : "아래 항목 더 보기");
+  };
+  scroller.addEventListener("scroll", update, { passive: true });
+  button.addEventListener("click", () => {
+    if (button.dataset.resourceScrollDirection === "top") {
+      scroller.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+    scroller.scrollBy({ top: Math.max(160, scroller.clientHeight * 0.8), behavior: "smooth" });
+  });
+  requestAnimationFrame(update);
+  setTimeout(update, 0);
+}
+
+function projectInfoEditDialog(project) {
+  return `
+    <div class="project-info-edit-layer" data-project-info-cancel>
+      <section class="project-info-edit-dialog" role="dialog" aria-modal="true" aria-labelledby="project-info-edit-title">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">프로젝트 정보</p>
+            <h2 id="project-info-edit-title">프로젝트 수정</h2>
+          </div>
+          <button class="icon-button" type="button" data-project-info-cancel aria-label="닫기">X</button>
+        </div>
+        <form class="form project-info-form" id="project-info-form">
+          <label>회사명<input name="company_name" maxlength="120" autocomplete="off" value="${escapeHtml(project.company_name || "")}" /></label>
+          <label>프로젝트명<input name="name" required maxlength="120" autocomplete="off" value="${escapeHtml(project.name || "")}" /></label>
+          <label>담당자<input name="owner" autocomplete="off" value="${escapeHtml(project.owner || "")}" /></label>
+          <label>상태<select name="status">${projectStatusOptions(project.status)}</select></label>
+          <div class="project-info-edit-actions">
+            <button class="secondary" type="button" data-project-info-cancel>취소</button>
+            <button type="submit">저장</button>
+          </div>
+        </form>
+      </section>
+    </div>
+  `;
+}
+
+function projectItemsForTab(tab, resources) {
+  if (tab === "files") {
+    return resources.projectFiles;
+  }
+  if (tab === "records") {
+    return resources.projectRecords;
+  }
+  return resources.meetings;
+}
+
+function projectResourceLabel() {
+  return {
+    meetings: "회의록",
+    files: "자료",
+    records: "기록",
+  }[projectDetailTab] || "회의록";
+}
+
+function projectResourceTabs(meetingCount, fileCount, recordCount) {
   return `
     <div class="project-page-tabs" role="tablist" aria-label="프로젝트 자료">
       <button class="project-page-tab ${projectDetailTab === "meetings" ? "active" : ""}" type="button" data-project-tab="meetings" role="tab" aria-selected="${projectDetailTab === "meetings"}">
         회의록 <span>${meetingCount}</span>
       </button>
-      <button class="project-page-tab ${projectDetailTab === "wiki" ? "active" : ""}" type="button" data-project-tab="wiki" role="tab" aria-selected="${projectDetailTab === "wiki"}">
-        Wiki <span>${wikiCount}</span>
+      <button class="project-page-tab ${projectDetailTab === "files" ? "active" : ""}" type="button" data-project-tab="files" role="tab" aria-selected="${projectDetailTab === "files"}">
+        자료 <span>${fileCount}</span>
+      </button>
+      <button class="project-page-tab ${projectDetailTab === "records" ? "active" : ""}" type="button" data-project-tab="records" role="tab" aria-selected="${projectDetailTab === "records"}">
+        기록 <span>${recordCount}</span>
       </button>
     </div>
   `;
@@ -725,18 +1177,34 @@ function projectResourceTabs(meetingCount, wikiCount) {
 
 function projectResourceList(items) {
   if (!items.length) {
-    return `<p class="empty">등록된 글이 없습니다.</p>`;
+    const emptyText = {
+      files: "업로드된 자료가 없습니다.",
+      records: "등록된 기록이 없습니다.",
+    }[projectDetailTab] || "등록된 글이 없습니다.";
+    return `<p class="empty">${emptyText}</p>`;
   }
   return `
-    <div class="resource-list">
-      ${items.map(projectResourceListItem).join("")}
+    <div class="resource-list-shell">
+      <div class="resource-list resource-list-scroll" data-resource-list-scroll>
+        ${items.map(projectResourceListItem).join("")}
+      </div>
+      <button class="resource-scroll-jump is-hidden" type="button" data-resource-scroll-jump aria-label="아래 항목 더 보기">↓</button>
     </div>
   `;
 }
 
 function projectResourceListItem(item) {
   const isSelected = item.id === selectedProjectResourceId && projectResourceMode !== "new";
-  const meta = projectDetailTab === "wiki" ? [item.category || "General", formatDateTime(item.updated_at)].filter(Boolean).join(" · ") : [item.date, item.start_time || "시간 미정"].filter(Boolean).join(" · ");
+  if (projectDetailTab === "files") {
+    const meta = [formatFileSize(item.size), formatDateTime(item.updated_at)].filter(Boolean).join(" · ");
+    return `
+      <a class="resource-list-item file-list-item ${isSelected ? "active" : ""}" href="${escapeHtml(projectFileDownloadUrl(item))}" download>
+        <strong>${escapeHtml(projectFileName(item))}</strong>
+        <span>${escapeHtml(meta)}</span>
+      </a>
+    `;
+  }
+  const meta = projectDetailTab === "records" ? formatDateTime(item.updated_at) : [item.date, item.start_time || "시간 미정"].filter(Boolean).join(" · ");
   return `
     <button class="resource-list-item ${isSelected ? "active" : ""}" type="button" data-project-resource-id="${escapeHtml(item.id)}">
       <strong>${escapeHtml(item.title)}</strong>
@@ -746,21 +1214,39 @@ function projectResourceListItem(item) {
 }
 
 function projectResourceDetail(item) {
+  if (projectDetailTab === "files") {
+    return projectFileDetail(item);
+  }
+  if (projectDetailTab === "records") {
+    if (projectResourceMode === "new") {
+      return projectRecordForm();
+    }
+    if (projectResourceMode === "edit" && item) {
+      return projectRecordForm(item);
+    }
+    if (!item) {
+      return `
+        <div class="resource-empty">
+          <p class="empty">선택된 기록이 없습니다.</p>
+        </div>
+      `;
+    }
+    return projectRecordView(item);
+  }
   if (projectResourceMode === "new") {
-    return projectDetailTab === "wiki" ? wikiResourceForm() : meetingResourceForm();
+    return meetingResourceForm();
   }
   if (projectResourceMode === "edit" && item) {
-    return projectDetailTab === "wiki" ? wikiResourceForm(item) : meetingResourceForm(item);
+    return meetingResourceForm(item);
   }
   if (!item) {
     return `
       <div class="resource-empty">
         <p class="empty">선택된 글이 없습니다.</p>
-        <button class="add-button small-add-button" type="button" data-project-resource-new aria-label="새 글 작성">+</button>
       </div>
     `;
   }
-  return projectDetailTab === "wiki" ? wikiResourceView(item) : meetingResourceView(item);
+  return meetingResourceView(item);
 }
 
 function meetingResourceForm(item = null) {
@@ -781,6 +1267,64 @@ function meetingResourceForm(item = null) {
         <button type="submit">${submitLabel}</button>
       </div>
     </form>
+  `;
+}
+
+function projectRecordWorkspace(items, editItem = null) {
+  return `
+    <section class="project-record-layout">
+      <aside class="project-record-compose">
+        <div class="section-head">
+          <h2>${editItem ? "기록 수정" : "기록 작성"}</h2>
+        </div>
+        ${projectRecordForm(editItem)}
+      </aside>
+      <section class="project-record-feed">
+        <div class="section-head">
+          <h2>기록 목록</h2>
+          <span class="badge">${items.length}</span>
+        </div>
+        ${projectRecordFeed(items)}
+      </section>
+    </section>
+  `;
+}
+
+function projectRecordForm(item = null) {
+  const submitLabel = item ? "기록 수정" : "기록 저장";
+  return `
+    <form class="record-compose-form" id="project-resource-form">
+      <label class="record-compose-label">기록
+        <textarea class="record-compose-textarea" name="content" required placeholder="프로젝트 진행 중 남겨둘 내용을 적어주세요.">${escapeHtml(projectRecordPlainContent(item))}</textarea>
+      </label>
+      <div class="resource-form-actions">
+        ${item ? `<button class="secondary" type="button" data-project-resource-cancel>취소</button>` : ""}
+        <button type="submit">${submitLabel}</button>
+      </div>
+    </form>
+  `;
+}
+
+function projectRecordFeed(items) {
+  if (!items.length) {
+    return `<p class="empty">등록된 기록이 없습니다.</p>`;
+  }
+  return `<div class="record-feed-list">${items.map(projectRecordFeedItem).join("")}</div>`;
+}
+
+function projectRecordFeedItem(item) {
+  const isEditing = projectResourceMode === "edit" && selectedProjectResourceId === item.id;
+  return `
+    <article class="record-feed-item ${isEditing ? "active" : ""}">
+      <div class="record-feed-head">
+        <time>${escapeHtml(formatDateTime(item.created_at))}</time>
+        <div class="record-feed-actions">
+          <button class="secondary" type="button" data-project-record-edit="${escapeHtml(item.id)}">수정</button>
+          <button class="danger-button" type="button" data-project-record-delete="${escapeHtml(item.id)}">삭제</button>
+        </div>
+      </div>
+      <p>${escapeHtml(projectRecordPlainContent(item))}</p>
+    </article>
   `;
 }
 
@@ -823,6 +1367,24 @@ function meetingResourceView(item) {
   `;
 }
 
+function projectRecordView(item) {
+  return `
+    <article class="resource-reader">
+      <div class="resource-reader-actions">
+        <button class="secondary" type="button" data-project-resource-edit>수정</button>
+        <button class="danger-button" type="button" data-project-resource-delete>삭제</button>
+      </div>
+      <p class="eyebrow">기록</p>
+      <h3>${escapeHtml(item.title)}</h3>
+      <dl class="resource-meta">
+        <dt>작성</dt><dd>${escapeHtml(formatDateTime(item.created_at))}</dd>
+        <dt>수정</dt><dd>${escapeHtml(formatDateTime(item.updated_at))}</dd>
+      </dl>
+      ${resourceBlock("기록 내용", noteContentWithImages(item))}
+    </article>
+  `;
+}
+
 function wikiResourceView(item) {
   const tags = Array.isArray(item.tags) && item.tags.length ? item.tags.join(", ") : "없음";
   return `
@@ -840,6 +1402,42 @@ function wikiResourceView(item) {
       </dl>
       ${resourceBlock("본문", noteContentWithImages(item))}
     </article>
+  `;
+}
+
+function projectFileDetail(item) {
+  if (!item) {
+    return `
+      <div class="file-resource-panel">
+        ${projectFileDropzone()}
+      </div>
+    `;
+  }
+  return `
+    <article class="resource-reader file-resource-reader">
+      <div class="resource-reader-actions">
+        <a class="button-link secondary" href="${escapeHtml(projectFileDownloadUrl(item))}" download>다운로드</a>
+        <button class="danger-button" type="button" data-project-resource-delete>삭제</button>
+      </div>
+      <p class="eyebrow">자료</p>
+      <h3>${escapeHtml(projectFileName(item))}</h3>
+      <dl class="resource-meta">
+        <dt>크기</dt><dd>${escapeHtml(formatFileSize(item.size))}</dd>
+        <dt>형식</dt><dd>${escapeHtml(item.content_type || "application/octet-stream")}</dd>
+        <dt>업로드</dt><dd>${escapeHtml(formatDateTime(item.created_at || item.updated_at))}</dd>
+      </dl>
+      ${projectFileDropzone()}
+    </article>
+  `;
+}
+
+function projectFileDropzone() {
+  return `
+    <section class="file-dropzone" data-project-file-dropzone tabindex="0" role="button" aria-label="자료 파일 업로드">
+      <input class="project-file-input" type="file" multiple data-project-file-input />
+      <strong>파일을 끌어놓거나 클릭해서 업로드</strong>
+      <span>문서, 이미지, 압축파일 등 모든 형식을 등록할 수 있습니다.</span>
+    </section>
   `;
 }
 
@@ -877,6 +1475,21 @@ function meetingContentWithImages(item) {
 
 function noteContentWithImages(item) {
   return contentWithLegacyImages(notePlainContent(item), resourceImages(item));
+}
+
+function projectRecordPlainContent(item) {
+  return notePlainContent(item);
+}
+
+function projectRecordTitleFromContent(content) {
+  const firstLine = String(content || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean);
+  if (!firstLine) {
+    return `기록 ${formatDateTime(new Date().toISOString())}`;
+  }
+  return firstLine.slice(0, 80);
 }
 
 function contentWithLegacyImages(content, images) {
@@ -944,6 +1557,18 @@ function setupInlineImageEditors(root = document) {
       ensureEditorParagraph(surface);
       syncRichTextEditor(surface);
     }
+  });
+  root.addEventListener("pointerdown", (event) => {
+    const handle = event.target.closest("[data-image-resize-handle]");
+    if (!handle || !root.contains(handle)) {
+      return;
+    }
+    startEditorImageResize(event, handle);
+  });
+  root.querySelectorAll("[data-image-resize-handle]").forEach((handle) => {
+    handle.addEventListener("pointerdown", (event) => {
+      startEditorImageResize(event, handle);
+    });
   });
   root.querySelectorAll("[data-inline-image-button]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -1037,12 +1662,16 @@ function editorImageHtml(image) {
   const alt = markdownImageAlt(image?.name || image?.alt || "본문 이미지");
   return `
     <figure class="editor-rich-image" contenteditable="false" data-url="${escapeHtml(safeUrl)}" data-alt="${escapeHtml(alt)}" data-width="${width}">
-      <img src="${escapeHtml(safeUrl)}" alt="${escapeHtml(alt)}" style="width: ${width}%;" loading="lazy" />
+      <div class="editor-image-frame" style="width: ${width}%;">
+        <img src="${escapeHtml(safeUrl)}" alt="${escapeHtml(alt)}" loading="lazy" />
+        <button class="editor-image-resize-handle top-left" type="button" data-image-resize-handle="left" aria-label="이미지 크기 조절"></button>
+        <button class="editor-image-resize-handle top-right" type="button" data-image-resize-handle="right" aria-label="이미지 크기 조절"></button>
+        <button class="editor-image-resize-handle bottom-left" type="button" data-image-resize-handle="left" aria-label="이미지 크기 조절"></button>
+        <button class="editor-image-resize-handle bottom-right" type="button" data-image-resize-handle="right" aria-label="이미지 크기 조절"></button>
+      </div>
       <figcaption>${escapeHtml(alt)}</figcaption>
       <div class="editor-image-controls">
-        <button class="secondary" type="button" data-image-resize="-10">축소</button>
         <span>${width}%</span>
-        <button class="secondary" type="button" data-image-resize="10">확대</button>
         <button class="danger-button" type="button" data-image-remove>삭제</button>
       </div>
     </figure>
@@ -1059,7 +1688,7 @@ function insertImagesIntoEditor(surface, images) {
     anchor = anchor.nextElementSibling || anchor;
   }
   images.forEach((image) => {
-    const node = htmlToElement(editorImageHtml(image));
+    const node = htmlToElement(editorImageHtml({ ...image, width: image?.width ?? 60 }));
     if (!node) {
       return;
     }
@@ -1116,8 +1745,65 @@ function resizeEditorImage(figure, delta) {
     return;
   }
   const nextWidth = clampImageWidth(Number(figure.dataset.width || 100) + delta);
+  setEditorImageWidth(figure, nextWidth);
+}
+
+function startEditorImageResize(event, handle) {
+  const figure = handle.closest(".editor-rich-image");
+  const surface = figure?.closest("[data-rich-editor]");
+  if (!figure || !surface) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  const figureRect = figure.getBoundingClientRect();
+  const figureStyle = window.getComputedStyle(figure);
+  const horizontalPadding = parseFloat(figureStyle.paddingLeft || "0") + parseFloat(figureStyle.paddingRight || "0");
+  const availableWidth = Math.max(1, figureRect.width - horizontalPadding);
+  activeImageResize = {
+    figure,
+    surface,
+    startX: event.clientX,
+    startWidth: Number(figure.dataset.width || 100),
+    availableWidth,
+    side: handle.dataset.imageResizeHandle === "left" ? "left" : "right",
+  };
+  figure.classList.add("is-resizing");
+  handle.setPointerCapture?.(event.pointerId);
+  window.addEventListener("pointermove", moveEditorImageResize);
+  window.addEventListener("pointerup", finishEditorImageResize, { once: true });
+  window.addEventListener("pointercancel", finishEditorImageResize, { once: true });
+}
+
+function moveEditorImageResize(event) {
+  if (!activeImageResize) {
+    return;
+  }
+  event.preventDefault();
+  const direction = activeImageResize.side === "left" ? -1 : 1;
+  const deltaPercent = (((event.clientX - activeImageResize.startX) * direction) / activeImageResize.availableWidth) * 100;
+  setEditorImageWidth(activeImageResize.figure, activeImageResize.startWidth + deltaPercent);
+}
+
+function finishEditorImageResize() {
+  if (!activeImageResize) {
+    return;
+  }
+  activeImageResize.figure.classList.remove("is-resizing");
+  syncRichTextEditor(activeImageResize.surface);
+  activeImageResize = null;
+  window.removeEventListener("pointermove", moveEditorImageResize);
+  window.removeEventListener("pointerup", finishEditorImageResize);
+  window.removeEventListener("pointercancel", finishEditorImageResize);
+}
+
+function setEditorImageWidth(figure, width) {
+  if (!figure) {
+    return;
+  }
+  const nextWidth = clampImageWidth(width);
   figure.dataset.width = String(nextWidth);
-  figure.querySelector("img")?.style.setProperty("width", `${nextWidth}%`);
+  figure.querySelector(".editor-image-frame")?.style.setProperty("width", `${nextWidth}%`);
   const label = figure.querySelector(".editor-image-controls span");
   if (label) {
     label.textContent = `${nextWidth}%`;
@@ -1314,7 +2000,7 @@ function clampImageWidth(value) {
   if (!Number.isFinite(number)) {
     return 100;
   }
-  return Math.max(20, Math.min(100, Math.round(number / 10) * 10));
+  return Math.max(15, Math.min(100, Math.round(number)));
 }
 
 function safeImageUrl(url) {
@@ -1357,9 +2043,9 @@ function fileToDataUrl(file) {
         resolve(reader.result);
         return;
       }
-      reject(new Error("이미지를 읽지 못했습니다."));
+      reject(new Error("파일을 읽지 못했습니다."));
     });
-    reader.addEventListener("error", () => reject(reader.error || new Error("이미지를 읽지 못했습니다.")));
+    reader.addEventListener("error", () => reject(reader.error || new Error("파일을 읽지 못했습니다.")));
     reader.readAsDataURL(file);
   });
 }
@@ -1442,6 +2128,7 @@ function setupProjectCreateDialog() {
     projectDetailTab = "meetings";
     selectedProjectResourceId = null;
     projectResourceMode = "view";
+    projectInfoEditOpen = false;
     renderProjects();
   });
   document.querySelector("#project-create-form input[name='company_name']")?.focus();
@@ -1542,6 +2229,54 @@ async function renderWiki() {
   });
 }
 
+function dashboardDayPanel(label, day, absenceEventCount) {
+  const dateText = day?.date ? formatDateLabel(day.date) : "";
+  return `
+    <section class="panel dashboard-day-panel">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">${escapeHtml(label)}</p>
+          <h2>${escapeHtml(dateText || label)}</h2>
+        </div>
+        <span class="badge">부재 ${absenceEventCount || 0}건 · 회의 ${(day?.meetings || []).length}건</span>
+      </div>
+      <div class="dashboard-day-content">
+        <section class="dashboard-focus-block">
+          <h3>휴가/부재</h3>
+          ${absenceOverview(day?.absences || [], `${label} 등록된 휴가/부재 일정이 없습니다.`)}
+        </section>
+        <section class="dashboard-focus-block">
+          <h3>회의</h3>
+          ${dashboardMeetingList(day?.meetings || [], `${label} 등록된 회의가 없습니다.`)}
+        </section>
+      </div>
+    </section>
+  `;
+}
+
+function dashboardScheduleBlock(title, items) {
+  return `
+    <section class="dashboard-focus-block">
+      <h3>${escapeHtml(title)}</h3>
+      ${rows(items, eventSummary)}
+    </section>
+  `;
+}
+
+function dashboardMeetingList(items, emptyText) {
+  if (!items.length) {
+    return `<p class="empty">${escapeHtml(emptyText || "표시할 회의가 없습니다.")}</p>`;
+  }
+  return `<div class="list">${items.map((item) => `<div class="row">${dashboardMeetingSummary(item)}</div>`).join("")}</div>`;
+}
+
+function dashboardMeetingSummary(item) {
+  const attendees = Array.isArray(item.attendees) ? item.attendees.join(", ") : "";
+  const time = item.start_time || "시간 미정";
+  const meta = [time, attendees || "참석자 미정"].filter(Boolean).join(" · ");
+  return `<div class="row-main"><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(meta)}</span></div><span class="badge">회의록</span>`;
+}
+
 function stat(label, value) {
   return `<div class="stat"><span>${escapeHtml(label)}</span><strong>${escapeHtml(String(value))}</strong></div>`;
 }
@@ -1553,9 +2288,9 @@ function rows(items, summary) {
   return `<div class="list">${items.map((item) => `<div class="row">${summary(item)}</div>`).join("")}</div>`;
 }
 
-function absenceOverview(items) {
+function absenceOverview(items, emptyText = "오늘 등록된 휴가/부재 일정이 없습니다.") {
   if (!items.length) {
-    return `<p class="empty">오늘 등록된 휴가/부재 일정이 없습니다.</p>`;
+    return `<p class="empty">${escapeHtml(emptyText)}</p>`;
   }
   return `
     <div class="absence-list">
@@ -1804,33 +2539,223 @@ async function saveTodoOrder() {
   renderTodos();
 }
 
-function timeline(items) {
-  if (!items.length) {
-    return `<p class="empty">등록된 작업이 없습니다.</p>`;
+function taskGantt(tasks, projects) {
+  const range = taskGanttRange(tasks);
+  const days = taskGanttDays(range.start, range.end);
+  const groups = taskGanttGroups(tasks, projects);
+  const rows = taskGanttRows(groups, range);
+  const todayIndex = dateDiffDays(range.start, new Date(`${toDateInputValue(new Date())}T00:00:00`));
+  if (!tasks.length) {
+    return `<div class="task-gantt-empty"><p class="empty">등록된 작업이 없습니다. 아래에서 첫 작업을 등록하세요.</p></div>`;
   }
-  const starts = items.map((item) => new Date(`${item.start_date}T00:00:00`).getTime());
-  const ends = items.map((item) => new Date(`${item.end_date}T00:00:00`).getTime());
-  const min = Math.min(...starts);
-  const max = Math.max(...ends);
-  const span = Math.max(1, max - min);
   return `
-    <div class="timeline">
-      ${items
-        .map((item) => {
-          const start = new Date(`${item.start_date}T00:00:00`).getTime();
-          const end = new Date(`${item.end_date}T00:00:00`).getTime();
-          const left = ((start - min) / span) * 100;
-          const width = Math.max(((end - start) / span) * 100, 4);
-          return `
-            <div class="timeline-row">
-              <div class="row-main"><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.start_date)} → ${escapeHtml(item.end_date)}</span></div>
-              <div class="track"><div class="bar" style="--bar-left:${left}%;--bar-width:${width}%"></div></div>
-            </div>
-          `;
-        })
-        .join("")}
+    <div class="task-gantt" style="--task-day-count:${days.length}; --task-day-width:${TASK_GANTT_DAY_WIDTH}px; --task-left-width:534px;">
+      <div class="task-gantt-scroll">
+        <div class="task-gantt-grid" style="min-width:${534 + days.length * TASK_GANTT_DAY_WIDTH}px; grid-template-columns: var(--task-left-width) repeat(${days.length}, var(--task-day-width));">
+          <div class="task-left-header" style="grid-row:1 / 3;">업무</div>
+          <div class="task-month-header" style="grid-column:2 / -1;">${taskMonthHeader(days)}</div>
+          <div class="task-day-header" style="grid-column:2 / -1;">${taskDayHeader(days)}</div>
+          ${rows
+            .map((row, index) => {
+              const gridRow = index + 3;
+              return `
+                <div class="task-left-cell ${row.type === "group" ? "is-group" : "is-task"}" style="grid-row:${gridRow};">${row.left}</div>
+                <div class="task-timeline-cell ${row.type === "group" ? "is-group" : "is-task"}" style="grid-column:2 / -1; grid-row:${gridRow};">
+                  ${todayIndex >= 0 && todayIndex < days.length ? `<span class="task-today-line" style="left:${todayIndex * TASK_GANTT_DAY_WIDTH}px;"></span>` : ""}
+                  ${row.bar}
+                </div>
+              `;
+            })
+            .join("")}
+        </div>
+      </div>
     </div>
   `;
+}
+
+function taskGanttRange(tasks) {
+  const today = new Date(`${toDateInputValue(new Date())}T00:00:00`);
+  const validTasks = tasks
+    .map((item) => ({ start: parseDateValue(item.start_date), end: parseDateValue(item.end_date) }))
+    .filter((item) => item.start && item.end);
+  let start = today;
+  let end = addDays(today, 27);
+  if (validTasks.length) {
+    start = validTasks.reduce((min, item) => minDate(min, item.start), today);
+    end = validTasks.reduce((max, item) => maxDate(max, item.end), today);
+  }
+  start = startOfWeek(addDays(start, -2));
+  end = addDays(end, 7);
+  if (dateDiffDays(start, end) < 28) {
+    end = addDays(start, 28);
+  }
+  return { start, end };
+}
+
+function taskGanttDays(start, end) {
+  const days = [];
+  let cursor = new Date(start);
+  while (cursor <= end) {
+    days.push(new Date(cursor));
+    cursor = addDays(cursor, 1);
+  }
+  return days;
+}
+
+function taskMonthHeader(days) {
+  const segments = [];
+  let startIndex = 0;
+  for (let index = 1; index <= days.length; index += 1) {
+    const current = days[index];
+    const previous = days[index - 1];
+    if (!current || current.getMonth() !== previous.getMonth() || current.getFullYear() !== previous.getFullYear()) {
+      segments.push({ start: startIndex + 1, span: index - startIndex, label: taskMonthLabel(previous) });
+      startIndex = index;
+    }
+  }
+  return segments.map((segment) => `<span style="grid-column:${segment.start} / span ${segment.span};">${escapeHtml(segment.label)}</span>`).join("");
+}
+
+function taskDayHeader(days) {
+  const today = toDateInputValue(new Date());
+  return days
+    .map((day) => {
+      const value = toDateInputValue(day);
+      return `<span class="${value === today ? "is-today" : ""}">${day.getDate()}</span>`;
+    })
+    .join("");
+}
+
+function taskMonthLabel(dateValue) {
+  return dateValue.toLocaleDateString("en-US", { month: "short" });
+}
+
+function taskGanttGroups(tasks, projects) {
+  const projectMap = new Map(projects.map((project) => [project.id, project]));
+  const groups = [];
+  const byProject = tasks.reduce((acc, task) => {
+    const key = task.project_id || "__unassigned__";
+    if (!acc.has(key)) {
+      acc.set(key, []);
+    }
+    acc.get(key).push(task);
+    return acc;
+  }, new Map());
+
+  projects.forEach((project) => {
+    const groupTasks = byProject.get(project.id) || [];
+    if (groupTasks.length) {
+      groups.push({ id: `project:${project.id}`, title: project.name, company: project.company_name || "", tasks: groupTasks });
+    }
+  });
+
+  byProject.forEach((groupTasks, key) => {
+    if (key === "__unassigned__") {
+      groups.push({ id: "project:__unassigned__", title: "프로젝트 미지정", company: "", tasks: groupTasks });
+      return;
+    }
+    if (!projectMap.has(key)) {
+      groups.push({ id: `project:${key}`, title: "알 수 없는 프로젝트", company: "", tasks: groupTasks });
+    }
+  });
+
+  return groups;
+}
+
+function taskGanttRows(groups, range) {
+  return groups.flatMap((group) => {
+    const collapsed = collapsedTaskGroups.has(group.id);
+    const groupDates = taskRangeForItems(group.tasks);
+    const rows = [
+      {
+        type: "group",
+        leftIndex: taskDateIndex(groupDates.start, range.start),
+        span: taskDateSpan(groupDates.start, groupDates.end, range.start),
+        left: taskGroupLeft(group, collapsed),
+        bar: taskBar("group", groupDates.start, groupDates.end, range.start, `${group.title} 기간`),
+      },
+    ];
+    if (!collapsed) {
+      rows.push(
+        ...group.tasks.map((task) => ({
+          type: "task",
+          leftIndex: taskDateIndex(parseDateValue(task.start_date), range.start),
+          span: taskDateSpan(parseDateValue(task.start_date), parseDateValue(task.end_date), range.start),
+          left: taskRowLeft(task),
+          bar: taskBar("task", parseDateValue(task.start_date), parseDateValue(task.end_date), range.start, task.title),
+        })),
+      );
+    }
+    return rows;
+  });
+}
+
+function taskRangeForItems(items) {
+  const valid = items
+    .map((item) => ({ start: parseDateValue(item.start_date), end: parseDateValue(item.end_date) }))
+    .filter((item) => item.start && item.end);
+  if (!valid.length) {
+    const today = new Date(`${toDateInputValue(new Date())}T00:00:00`);
+    return { start: today, end: today };
+  }
+  return {
+    start: valid.reduce((min, item) => minDate(min, item.start), valid[0].start),
+    end: valid.reduce((max, item) => maxDate(max, item.end), valid[0].end),
+  };
+}
+
+function taskGroupLeft(group, collapsed) {
+  const doneCount = group.tasks.filter((task) => task.status === "done").length;
+  const progress = group.tasks.length ? Math.round((doneCount / group.tasks.length) * 100) : 0;
+  return `
+    <div class="task-group-line">
+      <input type="checkbox" disabled ${progress === 100 ? "checked" : ""} aria-label="프로젝트 완료 상태" />
+      <button class="task-collapse" type="button" data-task-group-toggle="${escapeHtml(group.id)}" aria-label="${collapsed ? "펼치기" : "접기"}">${collapsed ? "›" : "⌄"}</button>
+      <span class="task-epic-icon">↯</span>
+      <div class="task-group-title">
+        <strong>${escapeHtml(group.title)}</strong>
+        ${group.company ? `<span>${escapeHtml(group.company)}</span>` : ""}
+        <div class="task-progress"><span style="width:${progress}%"></span></div>
+      </div>
+      <span class="task-group-count">${doneCount}/${group.tasks.length}</span>
+    </div>
+  `;
+}
+
+function taskRowLeft(task) {
+  const checked = task.status === "done";
+  return `
+    <div class="task-row-line">
+      <input type="checkbox" data-task-done="${escapeHtml(task.id)}" ${checked ? "checked" : ""} aria-label="작업 완료" />
+      <div class="task-title-line">
+        <strong class="${checked ? "is-done" : ""}">${escapeHtml(task.title)}</strong>
+        <span>${escapeHtml(task.owner || "담당자 미정")} · ${escapeHtml(task.start_date)} → ${escapeHtml(task.end_date)}</span>
+      </div>
+      <span class="task-status-pill status-${escapeHtml(task.status || "todo")}">${escapeHtml(statusLabel(task.status))}</span>
+    </div>
+  `;
+}
+
+function taskDateIndex(dateValue, rangeStart) {
+  if (!dateValue) {
+    return 0;
+  }
+  return Math.max(0, dateDiffDays(rangeStart, dateValue));
+}
+
+function taskDateSpan(start, end, rangeStart) {
+  if (!start || !end) {
+    return 1;
+  }
+  return Math.max(1, dateDiffDays(rangeStart, end) - taskDateIndex(start, rangeStart) + 1);
+}
+
+function taskBar(type, start, end, rangeStart, label) {
+  const left = taskDateIndex(start, rangeStart);
+  const span = taskDateSpan(start, end, rangeStart);
+  const leftPx = left * TASK_GANTT_DAY_WIDTH + 4;
+  const widthPx = Math.max(18, span * TASK_GANTT_DAY_WIDTH - 8);
+  return `<span class="task-gantt-bar ${type === "group" ? "is-group" : ""}" style="left:${leftPx}px; width:${widthPx}px;" title="${escapeHtml(label || "")}"></span>`;
 }
 
 function calendarCells(monthDate, eventsByDate, layout, multiDayLayout) {
@@ -2258,6 +3183,34 @@ function formatDateTime(value) {
   return value ? String(value).replace("T", " ") : "-";
 }
 
+function formatFileSize(value) {
+  const size = Number(value);
+  if (!Number.isFinite(size) || size < 0) {
+    return "-";
+  }
+  const units = ["B", "KB", "MB", "GB"];
+  let nextSize = size;
+  let unitIndex = 0;
+  while (nextSize >= 1024 && unitIndex < units.length - 1) {
+    nextSize /= 1024;
+    unitIndex += 1;
+  }
+  const digits = unitIndex === 0 || nextSize >= 10 ? 0 : 1;
+  return `${nextSize.toFixed(digits)} ${units[unitIndex]}`;
+}
+
+function projectFileName(item) {
+  return item?.filename || item?.title || "자료";
+}
+
+function projectFileDownloadUrl(item) {
+  if (item?.id) {
+    return `/api/project-files/${encodeURIComponent(item.id)}/download`;
+  }
+  const url = String(item?.url || "");
+  return url.startsWith("/api/project-files/") ? url : "#";
+}
+
 function categoryLabel(value) {
   return {
     annual_leave: "연차",
@@ -2306,6 +3259,12 @@ function projectStatusLabel(value) {
     paused: "보류",
     done: "완료",
   }[value] || value;
+}
+
+function projectStatusOptions(selected) {
+  return ["planning", "active", "paused", "done"]
+    .map((value) => `<option value="${value}" ${value === selected ? "selected" : ""}>${escapeHtml(projectStatusLabel(value))}</option>`)
+    .join("");
 }
 
 function escapeHtml(value) {
