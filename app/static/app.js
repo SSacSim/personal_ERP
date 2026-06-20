@@ -29,6 +29,8 @@ let taskRowClickTimer = null;
 let taskTimelineResizeJustEnded = false;
 let todoEditingId = null;
 let todoPendingDeleteId = null;
+let todoReportDialog = null;
+let todoReportLoading = false;
 let selectedProjectId = null;
 let projectCreateDialogOpen = false;
 let projectDetailTab = "meetings";
@@ -81,9 +83,10 @@ window.addEventListener("keydown", (event) => {
     calendarPendingDeleteId = null;
     renderCalendar();
   }
-  if (event.key === "Escape" && currentRoute() === "todos" && (todoEditingId || todoPendingDeleteId)) {
+  if (event.key === "Escape" && currentRoute() === "todos" && (todoEditingId || todoPendingDeleteId || todoReportDialog)) {
     todoEditingId = null;
     todoPendingDeleteId = null;
+    todoReportDialog = null;
     renderTodos();
   }
   if (event.key === "Escape" && currentRoute() === "tasks" && (taskCreateContext || taskDetailId || taskDetailEditingId || taskPendingDeleteId)) {
@@ -278,6 +281,8 @@ function renderRoute(route) {
   if (route !== "todos") {
     todoEditingId = null;
     todoPendingDeleteId = null;
+    todoReportDialog = null;
+    todoReportLoading = false;
   }
   if (route !== "tasks") {
     taskCreateContext = null;
@@ -1334,6 +1339,7 @@ async function renderTodos() {
         </div>
         <div class="todo-controls">
           <input id="todo-date" type="date" value="${selected}" />
+          <button id="report-button" type="button" ${todoReportLoading ? "disabled" : ""}>${todoReportLoading ? "보고서 생성 중" : "이번 주 보고서 생성"}</button>
         </div>
       </div>
       <div class="list todo-list" data-todo-list>
@@ -1341,14 +1347,8 @@ async function renderTodos() {
       </div>
       ${todoQuickForm()}
     </section>
-    <section class="panel">
-      <div class="calendar-head">
-        <h2>주간 보고서</h2>
-        <button id="report-button" type="button">이번 주 보고서 생성</button>
-      </div>
-      <div id="report-output" class="empty">생성된 보고서는 vault/Reports 폴더에 Markdown 문서로 저장됩니다.</div>
-    </section>
     ${pendingDeleteTodo ? todoDeleteConfirmDialog(pendingDeleteTodo) : ""}
+    ${todoReportDialog ? todoReportDialogHtml(todoReportDialog) : ""}
   `;
   document.querySelector("#todo-date").addEventListener("change", () => {
     todoEditingId = null;
@@ -1415,7 +1415,16 @@ async function renderTodos() {
       renderTodos();
     });
   });
+  document.querySelectorAll("[data-todo-report-close]").forEach((control) => {
+    control.addEventListener("click", () => {
+      todoReportDialog = null;
+      renderTodos();
+    });
+  });
   document.querySelector(".todo-delete-dialog")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+  });
+  document.querySelector(".todo-report-dialog")?.addEventListener("click", (event) => {
     event.stopPropagation();
   });
   document.querySelector("[data-todo-delete-confirm]")?.addEventListener("click", async () => {
@@ -1453,10 +1462,33 @@ async function renderTodos() {
     }
   });
   setupTodoDrag();
-  document.querySelector("#report-button").addEventListener("click", async () => {
-    const weekStart = startOfWeek(new Date(`${selected}T00:00:00`));
-    const report = await api(`/api/todos/weekly-report?week_start=${toDateInputValue(weekStart)}`, { method: "POST" });
-    document.querySelector("#report-output").outerHTML = `<pre id="report-output" class="report">${escapeHtml(report.body)}</pre>`;
+  document.querySelector("#report-button")?.addEventListener("click", async () => {
+    if (todoReportLoading) {
+      return;
+    }
+    todoReportLoading = true;
+    todoReportDialog = null;
+    renderTodos();
+    try {
+      const report = await api("/api/todos/weekly-report", { method: "POST" });
+      if (report.mode === "codex_sdk_error") {
+        try {
+          report.auth = await api("/api/chat/auth/start", { method: "POST" });
+        } catch (authError) {
+          report.auth_error = authError.message;
+        }
+      }
+      todoReportDialog = report;
+    } catch (error) {
+      todoReportDialog = {
+        title: "주간 TODO 보고서",
+        body: `보고서를 생성하지 못했습니다.\n\n${error.message}`,
+        mode: "error",
+      };
+    } finally {
+      todoReportLoading = false;
+      renderTodos();
+    }
   });
 }
 
@@ -3159,6 +3191,51 @@ function todoDeleteConfirmDialog(item) {
           <button class="secondary" type="button" data-todo-delete-cancel>취소</button>
           <button class="danger-button" type="button" data-todo-delete-confirm>삭제</button>
         </div>
+      </div>
+    </div>
+  `;
+}
+
+function todoReportDialogHtml(report) {
+  const title = report.title || "주간 TODO 보고서";
+  const start = report.week_start || "";
+  const end = report.week_end || "";
+  const range = [start, end].filter(Boolean).join(" ~ ");
+  const modeLabel = report.mode === "codex_sdk" ? "Codex SDK 정리" : report.mode === "codex_sdk_error" ? "기본 정리" : "보고서";
+  const auth = report.auth || null;
+  return `
+    <div class="modal-backdrop" data-todo-report-close>
+      <div class="modal-dialog todo-report-dialog" role="dialog" aria-modal="true" aria-labelledby="todo-report-title">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">${escapeHtml([range, report.basis].filter(Boolean).join(" · "))}</p>
+            <h2 id="todo-report-title">${escapeHtml(title)}</h2>
+          </div>
+          <button class="icon-button" type="button" data-todo-report-close aria-label="닫기">X</button>
+        </div>
+        <article class="todo-report">
+          <div class="todo-report-meta">
+            <span class="badge">${escapeHtml(modeLabel)}</span>
+            ${report.path ? `<span class="badge">${escapeHtml(report.path)}</span>` : ""}
+          </div>
+          ${
+            report.mode === "codex_sdk_error"
+              ? `<div class="todo-report-warning">
+                  <strong>Codex SDK 정리를 완료하지 못했습니다.</strong>
+                  <p>아래 보고서는 저장된 TODO를 기준으로 만든 기본 정리입니다.</p>
+                  ${report.codex_error ? `<pre>${escapeHtml(report.codex_error)}</pre>` : ""}
+                  ${
+                    auth?.auth_url
+                      ? `<a href="${escapeHtml(auth.auth_url)}" target="_blank" rel="noreferrer">Codex 인증하기</a>`
+                      : report.auth_error
+                        ? `<p>${escapeHtml(report.auth_error)}</p>`
+                        : ""
+                  }
+                </div>`
+              : ""
+          }
+          <pre class="todo-report-body">${escapeHtml(report.body || "보고서 내용이 없습니다.")}</pre>
+        </article>
       </div>
     </div>
   `;

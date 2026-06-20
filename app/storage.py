@@ -995,50 +995,104 @@ class ObsidianVault:
         title = str(metadata.get("title", "wiki"))
         return self.write("wiki_page", title, metadata, note.body, note.path, log_action="삭제").as_dict()
 
-    def weekly_report(self, week_start: date) -> dict[str, Any]:
-        week_end = week_start + timedelta(days=6)
-        todos = []
+    def weekly_todo_groups(self, week_start: date, week_end: date) -> list[dict[str, Any]]:
+        all_todos = []
         for note in self.list_notes("todo"):
             if note.metadata.get("deleted") is True:
                 continue
-            todo_date = parse_iso_date(note.metadata.get("date"))
+            all_todos.append(note.as_dict())
+        todos_by_id = {str(item.get("id")): item for item in all_todos if item.get("id")}
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for item in all_todos:
+            todo_date = parse_iso_date(item.get("date"))
             if todo_date and week_start <= todo_date <= week_end:
-                todos.append(note.as_dict())
+                key = self.todo_chain_root_key(item, todos_by_id)
+                grouped.setdefault(key, []).append(item)
+
+        groups = []
+        for items in grouped.values():
+            ordered = sorted(items, key=lambda item: (str(item.get("date") or ""), str(item.get("created_at") or ""), str(item.get("id") or "")))
+            latest = ordered[-1]
+            dates = [str(item.get("date") or "") for item in ordered if item.get("date")]
+            first_date = dates[0] if dates else ""
+            last_date = dates[-1] if dates else first_date
+            details = [todo_body_content(str(item.get("body", ""))) for item in reversed(ordered)]
+            detail = next((value for value in details if value), "")
+            groups.append(
+                {
+                    "title": latest.get("title") or ordered[0].get("title") or "TODO",
+                    "completed": latest.get("completed") is True,
+                    "date_label": first_date if first_date == last_date else f"{first_date} ~ {last_date}",
+                    "dates": dates,
+                    "detail": detail,
+                    "items": ordered,
+                    "count": len(ordered),
+                }
+            )
+        return sorted(groups, key=lambda item: (item["completed"], item["date_label"], item["title"]))
+
+    def todo_chain_root_key(self, item: dict[str, Any], todos_by_id: dict[str, dict[str, Any]]) -> str:
+        current = item
+        seen: set[str] = set()
+        while True:
+            current_id = str(current.get("id") or "")
+            source_id = str(current.get("source_id") or "")
+            if not source_id or source_id in seen or source_id not in todos_by_id:
+                return current_id or f"{current.get('origin_created_at') or current.get('created_at') or current.get('date')}:{current.get('title')}"
+            seen.add(current_id)
+            current = todos_by_id[source_id]
+
+    def weekly_report(self, week_start: date, codex_summary: str | None = None) -> dict[str, Any]:
+        week_end = week_start + timedelta(days=6)
+        todo_groups = self.weekly_todo_groups(week_start, week_end)
         tasks = []
         for note in self.list_notes("work_task"):
             start = parse_iso_date(note.metadata.get("start_date"))
             end = parse_iso_date(note.metadata.get("end_date"))
             if start and end and start <= week_end and end >= week_start:
                 tasks.append(note.as_dict())
-        completed = [item for item in todos if item.get("completed") is True]
-        pending = [item for item in todos if item.get("completed") is not True]
+        completed = [item for item in todo_groups if item.get("completed") is True]
+        pending = [item for item in todo_groups if item.get("completed") is not True]
+        completed_lines = [self.todo_report_group_line(item) for item in completed] or ["- 없음"]
+        pending_lines = [self.todo_report_group_line(item) for item in pending] or ["- 없음"]
+        task_lines = [
+            f"- {item.get('title')} ({item.get('start_date')} ~ {item.get('end_date')}, {item.get('status')})"
+            for item in tasks
+        ] or ["- 없음"]
+        summary_lines = codex_summary.strip().splitlines() if codex_summary else [
+            "요약",
+            f"* 완료 TODO {len(completed)}건, 미완료/이월 TODO {len(pending)}건입니다.",
+            f"* 같은 기간 작업바에 표시된 작업은 {len(tasks)}건입니다.",
+        ]
         lines = [
-            f"# Weekly Report {week_start.isoformat()} - {week_end.isoformat()}",
+            f"# 주간 TODO 보고서 {week_start.isoformat()} ~ {week_end.isoformat()}",
             "",
-            "## Summary",
-            f"- Completed todos: {len(completed)}",
-            f"- Pending or rolled todos: {len(pending)}",
-            f"- Active task bars: {len(tasks)}",
+            "## 정리",
+            *summary_lines,
             "",
-            "## Completed",
-            *[f"- [{item.get('date')}] {item.get('title')}" for item in completed],
+            "## 완료한 TODO",
+            *completed_lines,
             "",
-            "## Pending",
-            *[f"- [{item.get('date')}] {item.get('title')}" for item in pending],
+            "## 미완료 / 이월 TODO",
+            *pending_lines,
             "",
-            "## Task Timeline",
-            *[
-                f"- {item.get('title')} ({item.get('start_date')} -> {item.get('end_date')}, {item.get('status')})"
-                for item in tasks
-            ],
+            "## 작업바 참고",
+            *task_lines,
         ]
         metadata = {
-            "title": f"Weekly Report {week_start.isoformat()}",
+            "title": f"주간 TODO 보고서 {week_start.isoformat()}",
             "week_start": week_start.isoformat(),
             "week_end": week_end.isoformat(),
+            "summary_mode": "codex_sdk" if codex_summary else "local",
         }
         note = self.write("report", metadata["title"], metadata, "\n".join(lines))
         return note.as_dict()
+
+    def todo_report_group_line(self, item: dict[str, Any]) -> str:
+        detail = str(item.get("detail") or "").replace("\n", " / ").strip()
+        detail_text = f" - {detail[:160]}" if detail else ""
+        rollover_text = f" (이월 {int(item.get('count') or 1) - 1}회 정리)" if int(item.get("count") or 1) > 1 else ""
+        return f"- [{item.get('date_label')}] {item.get('title')}{rollover_text}{detail_text}"
 
     def dashboard(self, target_date: date) -> dict[str, Any]:
         self.rollover_todos(target_date)

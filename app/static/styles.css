@@ -2427,6 +2427,68 @@ textarea.long-textarea {
   padding: 8px 12px;
 }
 
+.todo-report-dialog {
+  width: min(860px, calc(100vw - 48px));
+}
+
+.todo-report {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+}
+
+.todo-report-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.todo-report-body {
+  max-height: min(520px, calc(100vh - 240px));
+  overflow: auto;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px;
+  background: #fbfcfd;
+  color: var(--text);
+  font: inherit;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.todo-report-warning {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #f9c2c0;
+  border-radius: 8px;
+  padding: 12px;
+  background: #fff5f5;
+  color: var(--danger);
+}
+
+.todo-report-warning p {
+  margin: 0;
+  color: var(--danger);
+}
+
+.todo-report-warning pre {
+  max-height: 120px;
+  overflow: auto;
+  margin: 0;
+  border-radius: 7px;
+  padding: 10px;
+  background: white;
+  color: var(--text);
+  font: inherit;
+  white-space: pre-wrap;
+}
+
+.todo-report-warning a {
+  color: var(--danger);
+  font-weight: 800;
+}
+
 .report {
   white-space: pre-wrap;
   line-height: 1.55;
