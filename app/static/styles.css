@@ -137,6 +137,23 @@ body[data-route="calendar"] .view {
   flex: 1;
 }
 
+body[data-route="tasks"] {
+  overflow: hidden;
+}
+
+body[data-route="tasks"] .shell {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+body[data-route="tasks"] .view {
+  min-height: 0;
+  flex: 1;
+  grid-template-rows: minmax(0, 1fr);
+}
+
 .topbar {
   display: flex;
   justify-content: space-between;
@@ -1693,6 +1710,9 @@ textarea.long-textarea {
 }
 
 .task-board-panel {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   padding: 0;
   overflow: hidden;
 }
@@ -1710,15 +1730,46 @@ textarea.long-textarea {
   margin-bottom: 0;
 }
 
+.task-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.task-register-button {
+  min-height: 32px;
+  padding: 6px 11px;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 800;
+}
+
 .task-gantt-empty {
   padding: 18px;
 }
 
+.task-gantt {
+  min-height: 0;
+  flex: 1;
+  display: flex;
+}
+
 .task-gantt-scroll {
+  min-height: 0;
+  flex: 1;
   overflow: auto;
+  background: white;
+  cursor: grab;
+}
+
+.task-gantt-scroll.is-panning,
+.task-gantt-scroll.is-panning * {
+  cursor: grabbing !important;
+  user-select: none;
 }
 
 .task-gantt-grid {
+  min-height: calc(100% - 16px);
   display: grid;
   grid-auto-rows: 40px;
   align-items: stretch;
@@ -1794,6 +1845,21 @@ textarea.long-textarea {
   background-color: #f3f4f6;
 }
 
+.task-left-cell.is-task,
+.task-timeline-cell.is-task {
+  cursor: pointer;
+}
+
+.task-left-cell.is-task:hover,
+.task-left-cell.is-selected {
+  background-color: #f8fbff;
+}
+
+.task-timeline-cell.is-task:hover,
+.task-timeline-cell.is-selected {
+  background-color: #f8fbff;
+}
+
 .task-group-line,
 .task-row-line {
   width: 100%;
@@ -1804,17 +1870,17 @@ textarea.long-textarea {
 }
 
 .task-group-line {
-  grid-template-columns: 18px 22px 18px minmax(0, 1fr) auto;
+  grid-template-columns: 18px 22px 18px minmax(0, 1fr) auto 28px;
 }
 
 .task-row-line {
-  grid-template-columns: 18px minmax(0, 1fr) auto;
-  padding-left: 72px;
+  grid-template-columns: 18px 18px 22px minmax(0, 1fr) auto auto;
+  padding-left: calc(16px + var(--task-level, 0) * 24px);
 }
 
 .task-collapse {
   width: 22px;
-  min-height: 22px;
+  height: 22px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1822,6 +1888,27 @@ textarea.long-textarea {
   border-radius: 4px;
   background: transparent;
   color: var(--text);
+}
+
+.task-collapse-icon {
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform-origin: 50% 50%;
+}
+
+.task-collapse.is-expanded .task-collapse-icon {
+  transform: rotate(45deg) translate(-1px, -1px);
+}
+
+.task-collapse.is-collapsed .task-collapse-icon {
+  transform: rotate(-45deg) translate(-1px, 1px);
+}
+
+.task-child-toggle-placeholder {
+  width: 22px;
+  height: 22px;
 }
 
 .task-epic-icon {
@@ -1876,6 +1963,43 @@ textarea.long-textarea {
   font-size: 12px;
 }
 
+.task-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.task-add-child-button,
+.task-delete-button {
+  width: 26px;
+  min-height: 26px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 6px;
+  font-size: 18px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.task-add-child-button {
+  background: #e8f1ff;
+  color: var(--accent);
+}
+
+.task-add-child-button:hover {
+  background: #dbeafe;
+}
+
+.task-delete-button {
+  background: #fee4e2;
+  color: var(--danger);
+}
+
+.task-delete-button:hover {
+  background: #fecaca;
+}
+
 .task-status-pill {
   min-width: 52px;
   justify-content: center;
@@ -1919,18 +2043,82 @@ textarea.long-textarea {
   );
 }
 
+.task-left-cell.is-task-dragging,
+.task-timeline-cell.is-task-dragging {
+  opacity: 0.62;
+}
+
+.task-left-cell.is-task-drop-target,
+.task-timeline-cell.is-task-drop-target {
+  background-color: #eff6ff;
+  box-shadow: inset 0 0 0 2px rgba(47, 128, 237, 0.28);
+}
+
 .task-gantt-bar {
   position: absolute;
-  top: 10px;
+  top: 50%;
   height: 20px;
   border-radius: 5px;
   background: #c06ef2;
+  transform: translateY(-50%);
+  cursor: default;
 }
 
 .task-gantt-bar.is-group {
-  top: 8px;
   height: 24px;
   border-radius: 0;
+}
+
+.task-gantt-bar.is-task.status-todo {
+  background: #9ca3af;
+}
+
+.task-gantt-bar.is-task.status-in_progress {
+  background: #3b82f6;
+}
+
+.task-gantt-bar.is-task.status-done {
+  background: #65a30d;
+}
+
+.task-gantt-bar.is-task.status-review {
+  background: #f59e0b;
+}
+
+.task-gantt-bar.is-task.status-blocked {
+  background: #ef4444;
+}
+
+.task-gantt-bar.is-task.is-resizing {
+  box-shadow: 0 0 0 2px rgba(168, 85, 247, 0.18);
+}
+
+.task-bar-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 2;
+  width: 10px;
+  cursor: ew-resize;
+}
+
+.task-bar-resize.is-start {
+  left: -2px;
+}
+
+.task-bar-resize.is-end {
+  right: -2px;
+}
+
+.task-bar-resize::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 4px;
+  width: 2px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
 }
 
 .task-today-line {
@@ -1943,8 +2131,133 @@ textarea.long-textarea {
   pointer-events: none;
 }
 
-.task-create-panel {
-  max-width: 920px;
+.task-create-dialog {
+  width: min(620px, calc(100vw - 48px));
+}
+
+.task-detail-dialog {
+  width: min(1060px, calc(100vw - 48px));
+}
+
+.task-detail-dialog .modal-head {
+  align-items: center;
+  padding-left: 22px;
+  padding-right: 22px;
+}
+
+.task-detail-dialog .modal-head > div {
+  min-width: 0;
+}
+
+.task-detail-dialog .modal-head h2 {
+  overflow-wrap: anywhere;
+}
+
+.task-detail-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.task-detail-actions .secondary {
+  padding: 8px 12px;
+  border-radius: 7px;
+}
+
+.task-detail {
+  display: grid;
+  gap: 16px;
+  padding: 18px 22px 22px;
+}
+
+.task-detail-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px 14px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+}
+
+.task-detail-summary-item {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.task-detail-summary-item span,
+.task-edit-context small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.task-detail-summary-item strong,
+.task-edit-context strong {
+  min-width: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.task-detail-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.task-detail-main.is-single {
+  grid-template-columns: 1fr;
+}
+
+.task-dialog-form {
+  padding: 18px;
+}
+
+.task-detail-edit-form {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  padding: 18px 22px 22px;
+}
+
+.task-detail-edit-form .task-edit-title {
+  grid-column: span 3;
+}
+
+.task-detail-edit-form .task-edit-title.full {
+  grid-column: 1 / -1;
+}
+
+.task-detail-edit-form textarea {
+  min-height: 140px;
+}
+
+.task-edit-context {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfd;
+}
+
+.task-edit-context span {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.task-edit-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.task-drag-handle {
+  display: inline-grid;
+  place-items: center;
 }
 
 .todo-line {
@@ -2409,6 +2722,26 @@ textarea.long-textarea {
     border-top: 1px solid var(--line);
     border-left: 0;
   }
+
+  .task-detail-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .task-detail-main {
+    grid-template-columns: 1fr;
+  }
+
+  .task-detail-edit-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .task-detail-edit-form .task-edit-title {
+    grid-column: 1 / -1;
+  }
+
+  .task-edit-context {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 640px) {
@@ -2513,6 +2846,32 @@ textarea.long-textarea {
   .modal-create {
     padding-left: 14px;
     padding-right: 14px;
+  }
+
+  .task-detail-dialog .modal-head {
+    align-items: flex-start;
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+
+  .task-detail,
+  .task-detail-edit-form {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+
+  .task-detail-summary,
+  .task-detail-edit-form,
+  .task-edit-context {
+    grid-template-columns: 1fr;
+  }
+
+  .task-edit-actions {
+    justify-content: stretch;
+  }
+
+  .task-edit-actions button {
+    flex: 1;
   }
 }
 

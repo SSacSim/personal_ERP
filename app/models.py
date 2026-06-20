@@ -61,11 +61,15 @@ class WorkTaskCreate(BaseModel):
     title: str = Field(min_length=1, max_length=140)
     start_date: Date
     end_date: Date
+    start_time: str | None = None
+    end_time: str | None = None
     project_id: str | None = None
+    parent_id: str | None = None
     owner: str | None = None
     status: TaskStatus = "todo"
     priority: Priority = "normal"
     description: str = ""
+    order: int | None = None
 
     @model_validator(mode="after")
     def validate_range(self) -> "WorkTaskCreate":
@@ -78,11 +82,15 @@ class WorkTaskUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=140)
     start_date: Date | None = None
     end_date: Date | None = None
+    start_time: str | None = None
+    end_time: str | None = None
     project_id: str | None = None
+    parent_id: str | None = None
     owner: str | None = None
     status: TaskStatus | None = None
     priority: Priority | None = None
     description: str | None = None
+    order: int | None = None
 
 
 class TodoCreate(BaseModel):

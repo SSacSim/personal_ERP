@@ -18,6 +18,15 @@ let calendarDialogDate = null;
 let calendarDetailEventId = null;
 let calendarEditEventId = null;
 let calendarPendingDeleteId = null;
+let taskCreateContext = null;
+let taskDetailId = null;
+let taskDetailEditingId = null;
+let taskDragId = null;
+let taskGanttInitialScrollDone = false;
+let taskPendingDeleteId = null;
+let taskGanttSuppressClickUntil = 0;
+let taskRowClickTimer = null;
+let taskTimelineResizeJustEnded = false;
 let todoEditingId = null;
 let todoPendingDeleteId = null;
 let selectedProjectId = null;
@@ -39,6 +48,7 @@ const chatMessages = [
 ];
 const collapsedTaskGroups = new Set();
 const TASK_GANTT_DAY_WIDTH = 52;
+const TASK_GANTT_LEFT_WIDTH = 560;
 
 todayLabel.textContent = toDateInputValue(new Date());
 setupChatWidget();
@@ -75,6 +85,14 @@ window.addEventListener("keydown", (event) => {
     todoEditingId = null;
     todoPendingDeleteId = null;
     renderTodos();
+  }
+  if (event.key === "Escape" && currentRoute() === "tasks" && (taskCreateContext || taskDetailId || taskDetailEditingId || taskPendingDeleteId)) {
+    taskCreateContext = null;
+    taskDetailId = null;
+    taskDetailEditingId = null;
+    taskPendingDeleteId = null;
+    clearTaskRowClickTimer();
+    renderTasks();
   }
   if (event.key === "Escape" && currentRoute() === "projects") {
     if (projectInfoEditOpen) {
@@ -260,6 +278,15 @@ function renderRoute(route) {
   if (route !== "todos") {
     todoEditingId = null;
     todoPendingDeleteId = null;
+  }
+  if (route !== "tasks") {
+    taskCreateContext = null;
+    taskDetailId = null;
+    taskDetailEditingId = null;
+    taskDragId = null;
+    taskGanttInitialScrollDone = false;
+    taskPendingDeleteId = null;
+    clearTaskRowClickTimer();
   }
   if (route !== "projects") {
     selectedProjectId = null;
@@ -485,6 +512,7 @@ async function renderCalendar() {
 }
 
 async function renderTasks() {
+  const scrollAnchorDate = captureTaskGanttScrollAnchorDate();
   const [{ items: tasks }, { items: projects }] = await Promise.all([api("/api/tasks"), api("/api/projects")]);
   const today = toDateInputValue(new Date());
   view.innerHTML = `
@@ -492,44 +520,29 @@ async function renderTasks() {
       <div class="task-board-head">
         <div>
           <p class="eyebrow">Gantt</p>
-          <h2>작업바</h2>
+          <div class="task-title-row">
+            <h2>작업바</h2>
+            <button class="secondary task-register-button" type="button" data-task-add-root>작업등록</button>
+          </div>
         </div>
         <span class="badge">${tasks.length}개 작업 · 오늘 ${today}</span>
       </div>
       ${taskGantt(tasks, projects)}
     </section>
-    <section class="panel task-create-panel">
-      <div class="section-head">
-        <h2>작업 등록</h2>
-      </div>
-      <form class="form task-create-form" id="task-form">
-        <label class="full">작업명<input name="title" required maxlength="140" placeholder="작업 이름" /></label>
-        <label>시작일<input name="start_date" type="date" required value="${today}" /></label>
-        <label>종료일<input name="end_date" type="date" required value="${today}" /></label>
-        <label>프로젝트<select name="project_id"><option value="">미지정</option>${projectOptions(projects)}</select></label>
-        <label>담당자<input name="owner" placeholder="담당자명" /></label>
-        <label>상태
-          <select name="status">
-            <option value="todo">대기</option>
-            <option value="in_progress">진행</option>
-            <option value="review">리뷰</option>
-            <option value="blocked">막힘</option>
-            <option value="done">완료</option>
-          </select>
-        </label>
-        <label>우선순위
-          <select name="priority">
-            <option value="normal">보통</option>
-            <option value="high">높음</option>
-            <option value="urgent">긴급</option>
-            <option value="low">낮음</option>
-          </select>
-        </label>
-        <label class="full">설명<textarea name="description"></textarea></label>
-        <button class="full" type="submit">작업 저장</button>
-      </form>
-    </section>
+    ${taskCreateContext ? taskCreateDialog(taskCreateContext, tasks, projects, today) : ""}
+    ${taskDetailId ? taskDetailDialog(tasks.find((task) => task.id === taskDetailId), tasks, projects) : ""}
+    ${taskPendingDeleteId ? taskDeleteConfirmDialog(tasks.find((task) => task.id === taskPendingDeleteId), tasks) : ""}
   `;
+  document.querySelector("[data-task-add-root]")?.addEventListener("click", () => {
+    taskCreateContext = {
+      projectId: "",
+      parentId: "",
+      selectableProject: true,
+    };
+    taskDetailId = null;
+    taskDetailEditingId = null;
+    renderTasks();
+  });
   document.querySelectorAll("[data-task-group-toggle]").forEach((button) => {
     button.addEventListener("click", () => {
       const groupId = button.dataset.taskGroupToggle;
@@ -544,6 +557,59 @@ async function renderTasks() {
       renderTasks();
     });
   });
+  document.querySelectorAll("[data-task-toggle]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const taskId = button.dataset.taskToggle;
+      if (!taskId) {
+        return;
+      }
+      const collapseKey = `task:${taskId}`;
+      if (collapsedTaskGroups.has(collapseKey)) {
+        collapsedTaskGroups.delete(collapseKey);
+      } else {
+        collapsedTaskGroups.add(collapseKey);
+      }
+      renderTasks();
+    });
+  });
+  document.querySelectorAll("[data-task-add-project]").forEach((button) => {
+    button.addEventListener("click", () => {
+      taskCreateContext = {
+        projectId: button.dataset.taskAddProject || "",
+        parentId: "",
+        label: button.dataset.taskAddLabel || "프로젝트 미지정",
+      };
+      taskDetailId = null;
+      taskDetailEditingId = null;
+      renderTasks();
+    });
+  });
+  document.querySelectorAll("[data-task-add-parent]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const task = tasks.find((item) => item.id === button.dataset.taskAddParent);
+      if (!task) {
+        return;
+      }
+      taskCreateContext = {
+        projectId: task.project_id || "",
+        parentId: task.id,
+        label: task.title,
+      };
+      taskDetailId = null;
+      taskDetailEditingId = null;
+      renderTasks();
+    });
+  });
+  document.querySelectorAll("[data-task-delete]").forEach((button) => {
+    button.addEventListener("click", () => {
+      taskPendingDeleteId = button.dataset.taskDelete;
+      taskCreateContext = null;
+      taskDetailId = null;
+      taskDetailEditingId = null;
+      clearTaskRowClickTimer();
+      renderTasks();
+    });
+  });
   document.querySelectorAll("[data-task-done]").forEach((checkbox) => {
     checkbox.addEventListener("change", async () => {
       await api(`/api/tasks/${encodeURIComponent(checkbox.dataset.taskDone)}`, {
@@ -553,21 +619,707 @@ async function renderTasks() {
       renderTasks();
     });
   });
-  document.querySelector("#task-form input[name='start_date']")?.addEventListener("change", (event) => {
-    const endDate = document.querySelector("#task-form input[name='end_date']");
+  setupTaskDragDrop(tasks);
+  setupTaskGanttPanning();
+  setupTaskTimelineEditing(tasks);
+  setupTaskRowDetails(tasks);
+  restoreTaskGanttScroll(scrollAnchorDate);
+  document.querySelectorAll("[data-task-dialog-close]").forEach((control) => {
+    control.addEventListener("click", () => {
+      taskCreateContext = null;
+      renderTasks();
+    });
+  });
+  document.querySelectorAll("[data-task-detail-close]").forEach((control) => {
+    control.addEventListener("click", () => {
+      taskDetailId = null;
+      taskDetailEditingId = null;
+      clearTaskRowClickTimer();
+      renderTasks();
+    });
+  });
+  document.querySelectorAll("[data-task-detail-edit]").forEach((control) => {
+    control.addEventListener("click", () => {
+      taskDetailEditingId = control.dataset.taskDetailEdit || null;
+      renderTasks();
+    });
+  });
+  document.querySelectorAll("[data-task-detail-edit-cancel]").forEach((control) => {
+    control.addEventListener("click", () => {
+      taskDetailEditingId = null;
+      renderTasks();
+    });
+  });
+  document.querySelectorAll("[data-task-delete-cancel]").forEach((control) => {
+    control.addEventListener("click", () => {
+      taskPendingDeleteId = null;
+      renderTasks();
+    });
+  });
+  document.querySelector(".task-create-dialog")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+  });
+  document.querySelector(".task-detail-dialog")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+  });
+  document.querySelector(".task-delete-dialog")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+  });
+  document.querySelector("[data-task-delete-confirm]")?.addEventListener("click", async () => {
+    if (!taskPendingDeleteId) {
+      return;
+    }
+    await api(`/api/tasks/${encodeURIComponent(taskPendingDeleteId)}`, { method: "DELETE" });
+    taskPendingDeleteId = null;
+    renderTasks();
+  });
+  document.querySelector("#task-dialog-form input[name='start_date']")?.addEventListener("change", (event) => {
+    const endDate = document.querySelector("#task-dialog-form input[name='end_date']");
     if (endDate && endDate.value < event.currentTarget.value) {
       endDate.value = event.currentTarget.value;
     }
   });
-  document.querySelector("#task-form").addEventListener("submit", async (event) => {
+  document.querySelector("#task-dialog-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     await api("/api/tasks", {
       method: "POST",
       body: JSON.stringify(Object.fromEntries(form.entries())),
     });
+    taskCreateContext = null;
     renderTasks();
   });
+  document.querySelector("#task-edit-form input[name='start_date']")?.addEventListener("change", (event) => {
+    const endDate = document.querySelector("#task-edit-form input[name='end_date']");
+    if (endDate && endDate.value < event.currentTarget.value) {
+      endDate.value = event.currentTarget.value;
+    }
+  });
+  document.querySelector("#task-edit-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const payload = Object.fromEntries(form.entries());
+    const taskId = payload.task_id;
+    delete payload.task_id;
+    if (!taskId) {
+      return;
+    }
+    await api(`/api/tasks/${encodeURIComponent(taskId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+    taskDetailEditingId = null;
+    renderTasks();
+  });
+}
+
+function taskDetailDialog(task, tasks, projects) {
+  if (!task) {
+    return "";
+  }
+  const project = projects.find((item) => item.id === task.project_id);
+  const parent = tasks.find((item) => item.id === task.parent_id);
+  const projectLabel = project ? (project.company_name ? `${project.company_name} / ${project.name}` : project.name) : "프로젝트 미지정";
+  const parentLabel = parent ? parent.title : "없음";
+  const description = taskDescriptionText(task);
+  const isEditing = taskDetailEditingId === task.id;
+  const summaryItems = [
+    ["프로젝트", projectLabel],
+    ["상위 작업", parentLabel],
+    ["담당자", task.owner || "담당자 미정"],
+    ["상태", statusLabel(task.status)],
+    ["우선순위", priorityLabel(task.priority)],
+    ["기간", taskPeriodText(task)],
+    ["등록", formatDateTime(task.created_at)],
+    ["수정", formatDateTime(task.updated_at)],
+  ]
+    .map(([label, value]) => taskDetailSummaryItem(label, value))
+    .join("");
+  return `
+    <div class="modal-backdrop" data-task-detail-close>
+      <div class="modal-dialog task-detail-dialog" role="dialog" aria-modal="true" aria-labelledby="task-detail-title">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">${isEditing ? "작업 수정" : "작업 상세"}</p>
+            <h2 id="task-detail-title">${escapeHtml(task.title)}</h2>
+          </div>
+          <div class="task-detail-actions">
+            ${
+              isEditing
+                ? `<button class="secondary" type="button" data-task-detail-edit-cancel>보기</button>`
+                : `<button class="secondary" type="button" data-task-detail-edit="${escapeHtml(task.id)}">수정</button>`
+            }
+            <button class="icon-button" type="button" data-task-detail-close aria-label="닫기">X</button>
+          </div>
+        </div>
+        ${
+          isEditing
+            ? taskDetailEditForm(task, projects, projectLabel, parentLabel, description)
+            : `<article class="task-detail">
+                <div class="task-detail-summary">${summaryItems}</div>
+                <div class="task-detail-main is-single">
+                  <div class="detail-notes">
+                    <span>설명</span>
+                    <p>${description ? escapeHtml(description) : "등록된 설명이 없습니다."}</p>
+                  </div>
+                </div>
+                ${task.path ? `<p class="detail-path">${escapeHtml(task.path)}</p>` : ""}
+              </article>`
+        }
+      </div>
+    </div>
+  `;
+}
+
+function taskDetailSummaryItem(label, value) {
+  return `
+    <div class="task-detail-summary-item">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value || "-")}</strong>
+    </div>
+  `;
+}
+
+function taskDetailEditForm(task, projects, projectLabel, parentLabel, description) {
+  const projectField = task.parent_id
+    ? `<input type="hidden" name="project_id" value="${escapeHtml(task.project_id || "")}" />`
+    : `<label>프로젝트<select name="project_id"><option value="">미지정</option>${projectOptions(projects, task.project_id || "")}</select></label>`;
+  return `
+    <form class="form task-dialog-form task-detail-edit-form" id="task-edit-form">
+      <input type="hidden" name="task_id" value="${escapeHtml(task.id)}" />
+      <input type="hidden" name="parent_id" value="${escapeHtml(task.parent_id || "")}" />
+      <div class="task-edit-context full">
+        <span><small>프로젝트</small><strong>${escapeHtml(projectLabel)}</strong></span>
+        <span><small>상위 작업</small><strong>${escapeHtml(parentLabel)}</strong></span>
+      </div>
+      ${projectField}
+      <label class="task-edit-title ${task.parent_id ? "full" : ""}">작업명<input name="title" required maxlength="140" value="${escapeHtml(task.title)}" /></label>
+      <label>시작일<input name="start_date" type="date" required value="${escapeHtml(task.start_date)}" /></label>
+      <label>종료일<input name="end_date" type="date" required value="${escapeHtml(task.end_date)}" /></label>
+      <label>담당자<input name="owner" placeholder="담당자명" value="${escapeHtml(task.owner || "")}" /></label>
+      <label>상태<select name="status">${statusOptions(task.status)}</select></label>
+      <label>우선순위<select name="priority">${priorityOptions(task.priority)}</select></label>
+      <label class="full">설명<textarea name="description">${escapeHtml(description)}</textarea></label>
+      <div class="task-edit-actions full">
+        <button class="secondary" type="button" data-task-detail-edit-cancel>취소</button>
+        <button type="submit">수정 저장</button>
+      </div>
+    </form>
+  `;
+}
+
+function taskDeleteConfirmDialog(task, tasks) {
+  if (!task) {
+    return "";
+  }
+  const childCount = taskDescendantIds(task.id, tasks).size;
+  const childText = childCount ? ` 하위 작업 ${childCount}개도 함께 삭제됩니다.` : "";
+  return `
+    <div class="modal-backdrop" data-task-delete-cancel>
+      <div class="confirm-dialog task-delete-dialog" role="alertdialog" aria-modal="true" aria-labelledby="task-delete-dialog-title">
+        <p class="eyebrow">작업 삭제</p>
+        <h3 id="task-delete-dialog-title">${escapeHtml(task.title)}</h3>
+        <p>이 작업을 작업바에서 삭제합니다.${escapeHtml(childText)} Obsidian 노트에는 삭제 시간과 변경 로그가 남습니다.</p>
+        <div class="confirm-actions">
+          <button class="secondary" type="button" data-task-delete-cancel>취소</button>
+          <button class="danger-button" type="button" data-task-delete-confirm>삭제</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function taskCreateDialog(context, tasks, projects, today) {
+  const isRootCreate = Boolean(context.selectableProject);
+  const project = projects.find((item) => item.id === context.projectId);
+  const parent = context.parentId ? tasks.find((item) => item.id === context.parentId) : null;
+  const projectLabel = project ? (project.company_name ? `${project.company_name} / ${project.name}` : project.name) : "프로젝트 미지정";
+  const targetLabel = isRootCreate ? "새 작업" : parent ? `상위 작업: ${parent.title}` : `프로젝트: ${projectLabel}`;
+  const title = isRootCreate ? "작업 등록" : "하위 작업 등록";
+  const projectField = isRootCreate
+    ? `<label>프로젝트<select name="project_id"><option value="">미지정</option>${projectOptions(projects, context.projectId || "")}</select></label>`
+    : `<input type="hidden" name="project_id" value="${escapeHtml(context.projectId || "")}" />`;
+  return `
+    <div class="modal-backdrop" data-task-dialog-close>
+      <div class="modal-dialog task-create-dialog" role="dialog" aria-modal="true" aria-labelledby="task-create-dialog-title">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">${escapeHtml(targetLabel)}</p>
+            <h2 id="task-create-dialog-title">${escapeHtml(title)}</h2>
+          </div>
+          <button class="icon-button" type="button" data-task-dialog-close aria-label="닫기">X</button>
+        </div>
+        <form class="form task-create-form task-dialog-form" id="task-dialog-form">
+          ${projectField}
+          <input type="hidden" name="parent_id" value="${escapeHtml(context.parentId || "")}" />
+          <label class="full">작업명<input name="title" required maxlength="140" placeholder="작업 이름" /></label>
+          <label>시작일<input name="start_date" type="date" required value="${escapeHtml(today)}" /></label>
+          <label>종료일<input name="end_date" type="date" required value="${escapeHtml(today)}" /></label>
+          <label>담당자<input name="owner" placeholder="담당자명" /></label>
+          <label>상태
+            <select name="status">
+              <option value="todo">대기</option>
+              <option value="in_progress">진행</option>
+              <option value="review">리뷰</option>
+              <option value="blocked">막힘</option>
+              <option value="done">완료</option>
+            </select>
+          </label>
+          <label>우선순위
+            <select name="priority">
+              <option value="normal">보통</option>
+              <option value="high">높음</option>
+              <option value="urgent">긴급</option>
+              <option value="low">낮음</option>
+            </select>
+          </label>
+          <label class="full">설명<textarea name="description"></textarea></label>
+          <button class="full" type="submit">작업 저장</button>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+function setupTaskDragDrop(tasks) {
+  document.querySelectorAll("[data-task-drag]").forEach((handle) => {
+    handle.addEventListener("dragstart", (event) => {
+      const taskId = handle.dataset.taskDrag;
+      if (!taskId) {
+        return;
+      }
+      taskDragId = taskId;
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", taskId);
+      document.querySelectorAll("[data-task-row-id]").forEach((cell) => {
+        cell.classList.toggle("is-task-dragging", cell.dataset.taskRowId === taskId);
+      });
+    });
+    handle.addEventListener("dragend", () => {
+      clearTaskDragState();
+    });
+  });
+
+  document.querySelectorAll("[data-task-drop-type]").forEach((target) => {
+    target.addEventListener("dragover", (event) => {
+      const taskId = taskDragId || event.dataTransfer.getData("text/plain");
+      if (!canDropTask(taskId, target, tasks)) {
+        return;
+      }
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      target.classList.add("is-task-drop-target");
+    });
+    target.addEventListener("dragleave", (event) => {
+      if (!event.currentTarget.contains(event.relatedTarget)) {
+        event.currentTarget.classList.remove("is-task-drop-target");
+      }
+    });
+    target.addEventListener("drop", async (event) => {
+      const taskId = taskDragId || event.dataTransfer.getData("text/plain");
+      if (!canDropTask(taskId, target, tasks)) {
+        return;
+      }
+      event.preventDefault();
+      await moveTaskToDropTarget(taskId, target, tasks, event);
+    });
+  });
+}
+
+function setupTaskGanttPanning() {
+  const scroller = document.querySelector(".task-gantt-scroll");
+  if (!scroller) {
+    return;
+  }
+  let panState = null;
+
+  scroller.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || isTaskInteractiveTarget(event.target)) {
+      return;
+    }
+    panState = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      scrollLeft: scroller.scrollLeft,
+      active: false,
+    };
+  });
+
+  scroller.addEventListener("pointermove", (event) => {
+    if (!panState || panState.pointerId !== event.pointerId) {
+      return;
+    }
+    const dx = event.clientX - panState.startX;
+    const dy = event.clientY - panState.startY;
+    if (!panState.active) {
+      if (Math.abs(dx) < 5 || Math.abs(dx) <= Math.abs(dy)) {
+        return;
+      }
+      panState.active = true;
+      scroller.classList.add("is-panning");
+      try {
+        scroller.setPointerCapture?.(event.pointerId);
+      } catch {
+        // Pointer capture is a progressive enhancement for smoother panning.
+      }
+      clearTaskRowClickTimer();
+    }
+    event.preventDefault();
+    scroller.scrollLeft = panState.scrollLeft - dx;
+  });
+
+  const finishPan = (event) => {
+    if (!panState || panState.pointerId !== event.pointerId) {
+      return;
+    }
+    if (panState.active) {
+      taskGanttSuppressClickUntil = Date.now() + 180;
+    }
+    scroller.classList.remove("is-panning");
+    try {
+      scroller.releasePointerCapture?.(event.pointerId);
+    } catch {
+      // Pointer capture can already be released by the browser.
+    }
+    panState = null;
+  };
+
+  scroller.addEventListener("pointerup", finishPan);
+  scroller.addEventListener("pointercancel", finishPan);
+}
+
+function scrollTaskGanttToTodayOnce() {
+  if (taskGanttInitialScrollDone) {
+    return;
+  }
+  const scroller = document.querySelector(".task-gantt-scroll");
+  if (!scroller) {
+    return;
+  }
+  const todayIndex = Number(scroller.dataset.taskTodayIndex);
+  if (!Number.isFinite(todayIndex) || todayIndex < 0) {
+    taskGanttInitialScrollDone = true;
+    return;
+  }
+  const targetLeft = Math.max(0, todayIndex * TASK_GANTT_DAY_WIDTH - TASK_GANTT_DAY_WIDTH);
+  scroller.scrollLeft = targetLeft;
+  taskGanttInitialScrollDone = true;
+}
+
+function captureTaskGanttScrollAnchorDate() {
+  const scroller = document.querySelector(".task-gantt-scroll");
+  const rangeStart = parseDateValue(scroller?.dataset.taskRangeStart);
+  if (!scroller || !rangeStart) {
+    return "";
+  }
+  const dayIndex = Math.max(0, Math.floor(scroller.scrollLeft / TASK_GANTT_DAY_WIDTH));
+  return toDateInputValue(addDays(rangeStart, dayIndex));
+}
+
+function restoreTaskGanttScroll(anchorDate) {
+  const scroller = document.querySelector(".task-gantt-scroll");
+  if (!scroller) {
+    return;
+  }
+  if (anchorDate && scrollTaskGanttToDate(scroller, anchorDate)) {
+    taskGanttInitialScrollDone = true;
+    return;
+  }
+  scrollTaskGanttToTodayOnce();
+}
+
+function scrollTaskGanttToDate(scroller, dateValue) {
+  const rangeStart = parseDateValue(scroller?.dataset.taskRangeStart);
+  const targetDate = parseDateValue(dateValue);
+  const dayCount = Number(scroller?.dataset.taskDayCount || 0);
+  if (!rangeStart || !targetDate || !dayCount) {
+    return false;
+  }
+  const index = Math.max(0, Math.min(dayCount - 1, dateDiffDays(rangeStart, targetDate)));
+  scroller.scrollLeft = Math.max(0, index * TASK_GANTT_DAY_WIDTH);
+  return true;
+}
+
+function setupTaskRowDetails(tasks) {
+  const taskIds = new Set(tasks.map((task) => task.id));
+  document.querySelectorAll(".task-left-cell[data-task-row-id], .task-gantt-bar[data-task-bar]").forEach((target) => {
+    target.addEventListener("click", (event) => {
+      clearTaskRowClickTimer();
+      if (event.detail > 1 || shouldIgnoreTaskRowClick(event)) {
+        return;
+      }
+      const taskId = target.dataset.taskRowId || target.dataset.taskBar;
+      if (!taskIds.has(taskId)) {
+        return;
+      }
+      taskRowClickTimer = window.setTimeout(() => {
+        taskRowClickTimer = null;
+        if (Date.now() < taskGanttSuppressClickUntil) {
+          return;
+        }
+        taskCreateContext = null;
+        taskDetailId = taskId;
+        taskDetailEditingId = null;
+        renderTasks();
+      }, 320);
+    });
+  });
+}
+
+function shouldIgnoreTaskRowClick(event) {
+  return (
+    Date.now() < taskGanttSuppressClickUntil ||
+    taskDragId ||
+    taskTimelineResizeJustEnded ||
+    isTaskRowControlTarget(event.target)
+  );
+}
+
+function isTaskInteractiveTarget(target) {
+  return Boolean(target?.closest?.("button, input, select, textarea, a, [data-task-drag], .task-gantt-bar, .task-bar-resize"));
+}
+
+function isTaskRowControlTarget(target) {
+  return Boolean(target?.closest?.("button, input, select, textarea, a, [data-task-drag], .task-bar-resize"));
+}
+
+function clearTaskRowClickTimer() {
+  if (!taskRowClickTimer) {
+    return;
+  }
+  window.clearTimeout(taskRowClickTimer);
+  taskRowClickTimer = null;
+}
+
+function canDropTask(taskId, target, tasks) {
+  const task = tasks.find((item) => item.id === taskId);
+  const context = taskDropContext(target);
+  if (!task || !context) {
+    return false;
+  }
+  if (context.parentId) {
+    if (context.parentId === taskId || taskDescendantIds(taskId, tasks).has(context.parentId)) {
+      return false;
+    }
+  }
+  const targetTask = context.dropTaskId ? tasks.find((item) => item.id === context.dropTaskId) : null;
+  if (targetTask && sameTaskScope(task, targetTask)) {
+    return context.dropTaskId !== taskId;
+  }
+  return (task.parent_id || "") !== context.parentId || (task.project_id || "") !== context.projectId;
+}
+
+function taskDropContext(target) {
+  const type = target.dataset.taskDropType;
+  if (type === "project") {
+    return { parentId: "", projectId: target.dataset.taskDropProject || "" };
+  }
+  if (type === "task") {
+    return {
+      parentId: target.dataset.taskDropTask || "",
+      projectId: target.dataset.taskDropProject || "",
+      dropTaskId: target.dataset.taskDropTask || "",
+    };
+  }
+  return null;
+}
+
+async function moveTaskToDropTarget(taskId, target, tasks, event) {
+  const context = taskDropContext(target);
+  if (!context) {
+    return;
+  }
+  const task = tasks.find((item) => item.id === taskId);
+  const targetTask = context.dropTaskId ? tasks.find((item) => item.id === context.dropTaskId) : null;
+  if (task && targetTask && sameTaskScope(task, targetTask)) {
+    await reorderTaskWithinScope(taskId, targetTask.id, tasks, event);
+    return;
+  }
+  const descendants = tasks.filter((task) => taskDescendantIds(taskId, tasks).has(task.id));
+  await api(`/api/tasks/${encodeURIComponent(taskId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ parent_id: context.parentId, project_id: context.projectId }),
+  });
+  await Promise.all(
+    descendants
+      .filter((task) => (task.project_id || "") !== context.projectId)
+      .map((task) =>
+        api(`/api/tasks/${encodeURIComponent(task.id)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ project_id: context.projectId }),
+        }),
+      ),
+  );
+  collapsedTaskGroups.delete(`project:${context.projectId || "__unassigned__"}`);
+  if (context.parentId) {
+    collapsedTaskGroups.delete(`task:${context.parentId}`);
+  }
+  clearTaskDragState();
+  renderTasks();
+}
+
+function sameTaskScope(a, b) {
+  if (!a || !b) {
+    return false;
+  }
+  return (a.project_id || "") === (b.project_id || "") && (a.parent_id || "") === (b.parent_id || "");
+}
+
+async function reorderTaskWithinScope(taskId, targetTaskId, tasks, event) {
+  const task = tasks.find((item) => item.id === taskId);
+  const targetTask = tasks.find((item) => item.id === targetTaskId);
+  if (!task || !targetTask || task.id === targetTask.id) {
+    return;
+  }
+  const targetRect = event.currentTarget.getBoundingClientRect();
+  const insertAfter = event.clientY > targetRect.top + targetRect.height / 2;
+  const siblings = sortTasks(tasks.filter((item) => sameTaskScope(item, task) && item.id !== taskId));
+  const targetIndex = siblings.findIndex((item) => item.id === targetTaskId);
+  if (targetIndex < 0) {
+    return;
+  }
+  siblings.splice(insertAfter ? targetIndex + 1 : targetIndex, 0, task);
+  await Promise.all(
+    siblings.map((item, index) =>
+      api(`/api/tasks/${encodeURIComponent(item.id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ order: index }),
+      }),
+    ),
+  );
+  clearTaskDragState();
+  renderTasks();
+}
+
+function taskDescendantIds(taskId, tasks) {
+  const childrenByParent = tasks.reduce((acc, task) => {
+    const parentId = task.parent_id || "";
+    if (!parentId) {
+      return acc;
+    }
+    if (!acc.has(parentId)) {
+      acc.set(parentId, []);
+    }
+    acc.get(parentId).push(task);
+    return acc;
+  }, new Map());
+  const descendants = new Set();
+  const stack = [...(childrenByParent.get(taskId) || [])];
+  while (stack.length) {
+    const child = stack.pop();
+    if (!child || descendants.has(child.id)) {
+      continue;
+    }
+    descendants.add(child.id);
+    stack.push(...(childrenByParent.get(child.id) || []));
+  }
+  return descendants;
+}
+
+function clearTaskDragState() {
+  taskDragId = null;
+  document.querySelectorAll(".is-task-dragging, .is-task-drop-target").forEach((element) => {
+    element.classList.remove("is-task-dragging", "is-task-drop-target");
+  });
+}
+
+function setupTaskTimelineEditing(tasks) {
+  const tasksById = new Map(tasks.map((task) => [task.id, task]));
+  document.querySelectorAll(".task-timeline-cell[data-task-row-id]").forEach((cell) => {
+    cell.addEventListener("dblclick", async (event) => {
+      clearTaskRowClickTimer();
+      if (Date.now() < taskGanttSuppressClickUntil || taskTimelineResizeJustEnded || event.target.closest(".task-bar-resize")) {
+        return;
+      }
+      event.preventDefault();
+      const task = tasksById.get(cell.dataset.taskRowId);
+      const dateValue = taskDateFromTimelinePointer(cell, event.clientX);
+      if (!task || !dateValue) {
+        return;
+      }
+      taskDetailId = null;
+      taskDetailEditingId = null;
+      await api(`/api/tasks/${encodeURIComponent(task.id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ start_date: dateValue, end_date: dateValue }),
+      });
+      renderTasks();
+    });
+  });
+
+  document.querySelectorAll("[data-task-bar-resize]").forEach((handle) => {
+    handle.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const edge = handle.dataset.taskBarResize;
+      const bar = handle.closest(".task-gantt-bar");
+      const timeline = handle.closest(".task-timeline-cell");
+      const task = tasksById.get(bar?.dataset.taskBar || "");
+      const rangeStart = parseDateValue(timeline?.dataset.taskRangeStart);
+      if (!edge || !bar || !timeline || !task || !rangeStart) {
+        return;
+      }
+      bar.classList.add("is-resizing");
+      let nextStart = task.start_date;
+      let nextEnd = task.end_date;
+
+      const onMove = (moveEvent) => {
+        const dateValue = taskDateFromTimelinePointer(timeline, moveEvent.clientX);
+        if (!dateValue) {
+          return;
+        }
+        if (edge === "start") {
+          nextStart = dateValue > nextEnd ? nextEnd : dateValue;
+        } else {
+          nextEnd = dateValue < nextStart ? nextStart : dateValue;
+        }
+        updateTaskTimelineBarPreview(bar, nextStart, nextEnd, rangeStart);
+      };
+
+      const onUp = async () => {
+        document.removeEventListener("pointermove", onMove);
+        document.removeEventListener("pointerup", onUp);
+        bar.classList.remove("is-resizing");
+        taskTimelineResizeJustEnded = true;
+        window.setTimeout(() => {
+          taskTimelineResizeJustEnded = false;
+        }, 120);
+        if (nextStart === task.start_date && nextEnd === task.end_date) {
+          return;
+        }
+        await api(`/api/tasks/${encodeURIComponent(task.id)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ start_date: nextStart, end_date: nextEnd }),
+        });
+        renderTasks();
+      };
+
+      document.addEventListener("pointermove", onMove);
+      document.addEventListener("pointerup", onUp);
+    });
+  });
+}
+
+function taskDateFromTimelinePointer(timeline, clientX) {
+  const rangeStart = parseDateValue(timeline?.dataset.taskRangeStart);
+  const dayCount = Number(timeline?.dataset.taskDayCount || 0);
+  if (!rangeStart || !dayCount) {
+    return "";
+  }
+  const rect = timeline.getBoundingClientRect();
+  const rawIndex = Math.floor((clientX - rect.left) / TASK_GANTT_DAY_WIDTH);
+  const index = Math.max(0, Math.min(dayCount - 1, rawIndex));
+  return toDateInputValue(addDays(rangeStart, index));
+}
+
+function updateTaskTimelineBarPreview(bar, startValue, endValue, rangeStart) {
+  const start = parseDateValue(startValue);
+  const end = parseDateValue(endValue);
+  const left = taskDateIndex(start, rangeStart);
+  const span = taskDateSpan(start, end, rangeStart);
+  bar.style.left = `${left * TASK_GANTT_DAY_WIDTH + 4}px`;
+  bar.style.width = `${Math.max(18, span * TASK_GANTT_DAY_WIDTH - 8)}px`;
 }
 
 async function renderTodos() {
@@ -2548,19 +3300,25 @@ function taskGantt(tasks, projects) {
   if (!tasks.length) {
     return `<div class="task-gantt-empty"><p class="empty">등록된 작업이 없습니다. 아래에서 첫 작업을 등록하세요.</p></div>`;
   }
+  const rowTemplate = `40px 40px repeat(${rows.length}, 56px)`;
   return `
-    <div class="task-gantt" style="--task-day-count:${days.length}; --task-day-width:${TASK_GANTT_DAY_WIDTH}px; --task-left-width:534px;">
-      <div class="task-gantt-scroll">
-        <div class="task-gantt-grid" style="min-width:${534 + days.length * TASK_GANTT_DAY_WIDTH}px; grid-template-columns: var(--task-left-width) repeat(${days.length}, var(--task-day-width));">
+    <div class="task-gantt" style="--task-day-count:${days.length}; --task-day-width:${TASK_GANTT_DAY_WIDTH}px; --task-left-width:${TASK_GANTT_LEFT_WIDTH}px;">
+      <div class="task-gantt-scroll" data-task-today-index="${todayIndex}" data-task-range-start="${toDateInputValue(range.start)}" data-task-day-count="${days.length}">
+        <div class="task-gantt-grid" style="min-width:${TASK_GANTT_LEFT_WIDTH + days.length * TASK_GANTT_DAY_WIDTH}px; grid-template-columns: var(--task-left-width) repeat(${days.length}, var(--task-day-width)); grid-template-rows:${rowTemplate};">
           <div class="task-left-header" style="grid-row:1 / 3;">업무</div>
           <div class="task-month-header" style="grid-column:2 / -1;">${taskMonthHeader(days)}</div>
           <div class="task-day-header" style="grid-column:2 / -1;">${taskDayHeader(days)}</div>
           ${rows
             .map((row, index) => {
               const gridRow = index + 3;
+              const rowAttrs = taskRowDataAttrs(row);
+              const selectedClass = row.taskId && row.taskId === taskDetailId ? " is-selected" : "";
+              const timelineAttrs = row.taskId
+                ? `data-task-range-start="${toDateInputValue(range.start)}" data-task-day-count="${days.length}"`
+                : "";
               return `
-                <div class="task-left-cell ${row.type === "group" ? "is-group" : "is-task"}" style="grid-row:${gridRow};">${row.left}</div>
-                <div class="task-timeline-cell ${row.type === "group" ? "is-group" : "is-task"}" style="grid-column:2 / -1; grid-row:${gridRow};">
+                <div class="task-left-cell ${row.type === "group" ? "is-group" : "is-task"}${selectedClass}" ${rowAttrs} style="grid-row:${gridRow};">${row.left}</div>
+                <div class="task-timeline-cell ${row.type === "group" ? "is-group" : "is-task"}${selectedClass}" ${rowAttrs} ${timelineAttrs} style="grid-column:2 / -1; grid-row:${gridRow};">
                   ${todayIndex >= 0 && todayIndex < days.length ? `<span class="task-today-line" style="left:${todayIndex * TASK_GANTT_DAY_WIDTH}px;"></span>` : ""}
                   ${row.bar}
                 </div>
@@ -2632,6 +3390,7 @@ function taskMonthLabel(dateValue) {
 
 function taskGanttGroups(tasks, projects) {
   const projectMap = new Map(projects.map((project) => [project.id, project]));
+  const taskById = new Map(tasks.map((task) => [task.id, task]));
   const groups = [];
   const byProject = tasks.reduce((acc, task) => {
     const key = task.project_id || "__unassigned__";
@@ -2645,21 +3404,24 @@ function taskGanttGroups(tasks, projects) {
   projects.forEach((project) => {
     const groupTasks = byProject.get(project.id) || [];
     if (groupTasks.length) {
-      groups.push({ id: `project:${project.id}`, title: project.name, company: project.company_name || "", tasks: groupTasks });
+      groups.push({ id: `project:${project.id}`, projectId: project.id, title: project.name, company: project.company_name || "", tasks: sortTasks(groupTasks) });
     }
   });
 
   byProject.forEach((groupTasks, key) => {
     if (key === "__unassigned__") {
-      groups.push({ id: "project:__unassigned__", title: "프로젝트 미지정", company: "", tasks: groupTasks });
+      groups.push({ id: "project:__unassigned__", projectId: "", title: "프로젝트 미지정", company: "", tasks: sortTasks(groupTasks) });
       return;
     }
     if (!projectMap.has(key)) {
-      groups.push({ id: `project:${key}`, title: "알 수 없는 프로젝트", company: "", tasks: groupTasks });
+      groups.push({ id: `project:${key}`, projectId: key, title: "알 수 없는 프로젝트", company: "", tasks: sortTasks(groupTasks) });
     }
   });
 
-  return groups;
+  return groups.map((group) => ({
+    ...group,
+    tree: taskTreeForGroup(group.tasks, group.projectId, taskById),
+  }));
 }
 
 function taskGanttRows(groups, range) {
@@ -2673,21 +3435,94 @@ function taskGanttRows(groups, range) {
         span: taskDateSpan(groupDates.start, groupDates.end, range.start),
         left: taskGroupLeft(group, collapsed),
         bar: taskBar("group", groupDates.start, groupDates.end, range.start, `${group.title} 기간`),
+        dropType: "project",
+        groupId: group.id,
+        projectId: group.projectId || "",
       },
     ];
     if (!collapsed) {
-      rows.push(
-        ...group.tasks.map((task) => ({
-          type: "task",
-          leftIndex: taskDateIndex(parseDateValue(task.start_date), range.start),
-          span: taskDateSpan(parseDateValue(task.start_date), parseDateValue(task.end_date), range.start),
-          left: taskRowLeft(task),
-          bar: taskBar("task", parseDateValue(task.start_date), parseDateValue(task.end_date), range.start, task.title),
-        })),
-      );
+      rows.push(...taskTreeRows(group.tree.roots, group.tree.childrenByParent, range, 0));
     }
     return rows;
   });
+}
+
+function taskTreeForGroup(tasks, projectId, taskById) {
+  const childrenByParent = new Map();
+  const roots = [];
+  tasks.forEach((task) => {
+    const parentId = task.parent_id || "";
+    const parent = parentId ? taskById.get(parentId) : null;
+    if (parent && (parent.project_id || "") === projectId) {
+      if (!childrenByParent.has(parentId)) {
+        childrenByParent.set(parentId, []);
+      }
+      childrenByParent.get(parentId).push(task);
+      return;
+    }
+    roots.push(task);
+  });
+  childrenByParent.forEach((items) => items.sort(compareTasks));
+  roots.sort(compareTasks);
+  return { roots, childrenByParent };
+}
+
+function taskTreeRows(tasks, childrenByParent, range, level) {
+  return tasks.flatMap((task) => {
+    const children = childrenByParent.get(task.id) || [];
+    const collapsed = collapsedTaskGroups.has(`task:${task.id}`);
+    const rows = [
+      {
+        type: "task",
+        taskId: task.id,
+        projectId: task.project_id || "",
+        parentId: task.parent_id || "",
+        dropType: "task",
+        leftIndex: taskDateIndex(parseDateValue(task.start_date), range.start),
+        span: taskDateSpan(parseDateValue(task.start_date), parseDateValue(task.end_date), range.start),
+        left: taskRowLeft(task, level, children.length, collapsed),
+        bar: taskBar("task", parseDateValue(task.start_date), parseDateValue(task.end_date), range.start, taskPeriodText(task), task),
+      },
+    ];
+    if (children.length && !collapsed) {
+      rows.push(...taskTreeRows(children, childrenByParent, range, level + 1));
+    }
+    return rows;
+  });
+}
+
+function taskRowDataAttrs(row) {
+  const attrs = [];
+  if (row.dropType) {
+    attrs.push(`data-task-drop-type="${escapeHtml(row.dropType)}"`);
+    attrs.push(`data-task-drop-project="${escapeHtml(row.projectId || "")}"`);
+  }
+  if (row.taskId) {
+    attrs.push(`data-task-row-id="${escapeHtml(row.taskId)}"`);
+    attrs.push(`data-task-drop-task="${escapeHtml(row.taskId)}"`);
+  }
+  if (row.groupId) {
+    attrs.push(`data-task-group-row="${escapeHtml(row.groupId)}"`);
+  }
+  return attrs.join(" ");
+}
+
+function sortTasks(tasks) {
+  return [...tasks].sort(compareTasks);
+}
+
+function compareTasks(a, b) {
+  return (
+    taskOrderValue(a) - taskOrderValue(b) ||
+    String(a.created_at || "").localeCompare(String(b.created_at || "")) ||
+    String(a.title || "").localeCompare(String(b.title || "")) ||
+    String(a.id || "").localeCompare(String(b.id || ""))
+  );
+}
+
+function taskOrderValue(task) {
+  const order = Number(task?.order);
+  return Number.isFinite(order) ? order : 1_000_000;
 }
 
 function taskRangeForItems(items) {
@@ -2710,7 +3545,7 @@ function taskGroupLeft(group, collapsed) {
   return `
     <div class="task-group-line">
       <input type="checkbox" disabled ${progress === 100 ? "checked" : ""} aria-label="프로젝트 완료 상태" />
-      <button class="task-collapse" type="button" data-task-group-toggle="${escapeHtml(group.id)}" aria-label="${collapsed ? "펼치기" : "접기"}">${collapsed ? "›" : "⌄"}</button>
+      <button class="task-collapse ${collapsed ? "is-collapsed" : "is-expanded"}" type="button" data-task-group-toggle="${escapeHtml(group.id)}" aria-label="${collapsed ? "펼치기" : "접기"}" aria-expanded="${collapsed ? "false" : "true"}"><span class="task-collapse-icon" aria-hidden="true"></span></button>
       <span class="task-epic-icon">↯</span>
       <div class="task-group-title">
         <strong>${escapeHtml(group.title)}</strong>
@@ -2718,20 +3553,45 @@ function taskGroupLeft(group, collapsed) {
         <div class="task-progress"><span style="width:${progress}%"></span></div>
       </div>
       <span class="task-group-count">${doneCount}/${group.tasks.length}</span>
+      <button class="task-add-child-button" type="button" data-task-add-project="${escapeHtml(group.projectId || "")}" data-task-add-label="${escapeHtml(group.title)}" aria-label="하위 작업 추가">+</button>
     </div>
   `;
 }
 
-function taskRowLeft(task) {
+function taskPeriodText(task) {
+  if (task.start_date === task.end_date) {
+    return task.start_date;
+  }
+  return `${task.start_date} → ${task.end_date}`;
+}
+
+function taskDescriptionText(task) {
+  return splitEventBody(task.body).content
+    .replace(/^# .*(?:\r?\n|$)/, "")
+    .trim();
+}
+
+function taskRowLeft(task, level, childCount, collapsed) {
   const checked = task.status === "done";
+  const safeLevel = Math.min(Number(level) || 0, 8);
   return `
-    <div class="task-row-line">
+    <div class="task-row-line" style="--task-level:${safeLevel};">
+      <span class="drag-handle task-drag-handle" draggable="true" data-task-drag="${escapeHtml(task.id)}" title="작업 이동" aria-label="작업 이동">⋮⋮</span>
       <input type="checkbox" data-task-done="${escapeHtml(task.id)}" ${checked ? "checked" : ""} aria-label="작업 완료" />
+      ${
+        childCount
+          ? `<button class="task-collapse ${collapsed ? "is-collapsed" : "is-expanded"}" type="button" data-task-toggle="${escapeHtml(task.id)}" aria-label="${collapsed ? "펼치기" : "접기"}" aria-expanded="${collapsed ? "false" : "true"}"><span class="task-collapse-icon" aria-hidden="true"></span></button>`
+          : `<span class="task-child-toggle-placeholder"></span>`
+      }
       <div class="task-title-line">
         <strong class="${checked ? "is-done" : ""}">${escapeHtml(task.title)}</strong>
-        <span>${escapeHtml(task.owner || "담당자 미정")} · ${escapeHtml(task.start_date)} → ${escapeHtml(task.end_date)}</span>
+        <span>${escapeHtml(task.owner || "담당자 미정")} · ${escapeHtml(taskPeriodText(task))}</span>
       </div>
       <span class="task-status-pill status-${escapeHtml(task.status || "todo")}">${escapeHtml(statusLabel(task.status))}</span>
+      <span class="task-row-actions">
+        <button class="task-delete-button" type="button" data-task-delete="${escapeHtml(task.id)}" aria-label="작업 삭제">-</button>
+        <button class="task-add-child-button" type="button" data-task-add-parent="${escapeHtml(task.id)}" aria-label="하위 작업 추가">+</button>
+      </span>
     </div>
   `;
 }
@@ -2750,12 +3610,26 @@ function taskDateSpan(start, end, rangeStart) {
   return Math.max(1, dateDiffDays(rangeStart, end) - taskDateIndex(start, rangeStart) + 1);
 }
 
-function taskBar(type, start, end, rangeStart, label) {
+function taskBar(type, start, end, rangeStart, label, task = null) {
   const left = taskDateIndex(start, rangeStart);
   const span = taskDateSpan(start, end, rangeStart);
   const leftPx = left * TASK_GANTT_DAY_WIDTH + 4;
   const widthPx = Math.max(18, span * TASK_GANTT_DAY_WIDTH - 8);
-  return `<span class="task-gantt-bar ${type === "group" ? "is-group" : ""}" style="left:${leftPx}px; width:${widthPx}px;" title="${escapeHtml(label || "")}"></span>`;
+  const isGroup = type === "group";
+  const classNames = ["task-gantt-bar", isGroup ? "is-group" : "is-task"];
+  if (task) {
+    classNames.push(`status-${task.status || "todo"}`);
+  }
+  return `
+    <span class="${escapeHtml(classNames.join(" "))}" ${task ? `data-task-bar="${escapeHtml(task.id)}"` : ""} style="left:${leftPx}px; width:${widthPx}px;" title="${escapeHtml(label || "")}">
+      ${
+        task
+          ? `<span class="task-bar-resize is-start" data-task-bar-resize="start" aria-label="시작일 조정"></span>
+             <span class="task-bar-resize is-end" data-task-bar-resize="end" aria-label="종료일 조정"></span>`
+          : ""
+      }
+    </span>
+  `;
 }
 
 function calendarCells(monthDate, eventsByDate, layout, multiDayLayout) {
@@ -3057,11 +3931,11 @@ function calendarEventDetail(item) {
   `;
 }
 
-function projectOptions(projects) {
+function projectOptions(projects, selectedId = "") {
   return projects
     .map((project) => {
       const label = project.company_name ? `${project.company_name} / ${project.name}` : project.name;
-      return `<option value="${escapeHtml(project.id)}">${escapeHtml(label)}</option>`;
+      return `<option value="${escapeHtml(project.id)}" ${project.id === selectedId ? "selected" : ""}>${escapeHtml(label)}</option>`;
     })
     .join("");
 }
@@ -3250,6 +4124,27 @@ function statusLabel(value) {
     done: "완료",
     blocked: "막힘",
   }[value] || value;
+}
+
+function statusOptions(selected) {
+  return ["todo", "in_progress", "review", "blocked", "done"]
+    .map((value) => `<option value="${value}" ${value === selected ? "selected" : ""}>${escapeHtml(statusLabel(value))}</option>`)
+    .join("");
+}
+
+function priorityLabel(value) {
+  return {
+    low: "낮음",
+    normal: "보통",
+    high: "높음",
+    urgent: "긴급",
+  }[value] || value || "보통";
+}
+
+function priorityOptions(selected) {
+  return ["normal", "high", "urgent", "low"]
+    .map((value) => `<option value="${value}" ${value === selected ? "selected" : ""}>${escapeHtml(priorityLabel(value))}</option>`)
+    .join("");
 }
 
 function projectStatusLabel(value) {

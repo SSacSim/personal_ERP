@@ -501,36 +501,129 @@ class ObsidianVault:
         return sorted(entries, key=lambda item: (item.get("person", ""), item.get("category", ""), item.get("title", "")))
 
     def create_task(self, data: dict[str, Any]) -> dict[str, Any]:
+        project_id = data.get("project_id") or ""
+        parent_id = data.get("parent_id") or ""
         body = f"# {data['title']}\n\n{data.get('description', '').strip()}"
         metadata = {
             "title": data["title"],
             "start_date": str(data["start_date"]),
             "end_date": str(data["end_date"]),
-            "project_id": data.get("project_id") or "",
+            "start_time": data.get("start_time") or "",
+            "end_time": data.get("end_time") or "",
+            "project_id": project_id,
+            "parent_id": parent_id,
             "owner": data.get("owner") or "",
             "status": data.get("status", "todo"),
             "priority": data.get("priority", "normal"),
+            "order": data.get("order") if data.get("order") is not None else self.next_task_order(project_id, parent_id),
         }
         return self.write("work_task", data["title"], metadata, body, log_action="등록").as_dict()
 
     def list_tasks(self) -> list[dict[str, Any]]:
-        items = [note.as_dict() for note in self.list_notes("work_task")]
-        return sorted(items, key=lambda item: (item.get("start_date", ""), item.get("end_date", "")))
+        notes = [note for note in self.list_notes("work_task") if note.metadata.get("deleted") is not True]
+        self.ensure_task_orders(notes)
+        items = [note.as_dict() for note in notes]
+        return sorted(items, key=lambda item: (item.get("project_id", ""), item.get("parent_id", ""), self.task_order(item), item.get("created_at", ""), item.get("title", "")))
 
     def update_task(self, task_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
         note = self.find_by_id("work_task", task_id)
-        if note is None:
+        if note is None or note.metadata.get("deleted") is True:
             return None
         metadata = dict(note.metadata)
+        current_project_id = metadata.get("project_id") or ""
+        current_parent_id = metadata.get("parent_id") or ""
+        next_project_id = updates.get("project_id", current_project_id) or ""
+        next_parent_id = updates.get("parent_id", current_parent_id) or ""
+        moved_scope = (next_project_id, next_parent_id) != (current_project_id, current_parent_id)
         for key, value in updates.items():
             if value is not None:
                 metadata[key] = str(value) if isinstance(value, date) else value
+        if moved_scope and "order" not in updates:
+            metadata["order"] = self.next_task_order(next_project_id, next_parent_id, exclude_id=task_id)
         title = metadata.get("title", "task")
         body = note.body
         if "description" in updates and updates["description"] is not None:
             body = body_with_replaced_content(note.body, str(title), updates["description"])
         fields = [key for key, value in updates.items() if value is not None]
         return self.write("work_task", str(title), metadata, body, note.path, log_action="수정", log_fields=fields).as_dict()
+
+    def delete_task(self, task_id: str) -> dict[str, Any] | None:
+        note = self.find_by_id("work_task", task_id)
+        if note is None or note.metadata.get("deleted") is True:
+            return None
+        notes = [item for item in self.list_notes("work_task") if item.metadata.get("deleted") is not True]
+        delete_ids = {task_id}
+        changed = True
+        while changed:
+            changed = False
+            for item in notes:
+                item_id = str(item.metadata.get("id") or "")
+                parent_id = str(item.metadata.get("parent_id") or "")
+                if item_id and item_id not in delete_ids and parent_id in delete_ids:
+                    delete_ids.add(item_id)
+                    changed = True
+
+        deleted_at = datetime.now().isoformat(timespec="seconds")
+        deleted_primary = None
+        for item in notes:
+            item_id = str(item.metadata.get("id") or "")
+            if item_id not in delete_ids:
+                continue
+            metadata = dict(item.metadata)
+            metadata["deleted"] = True
+            metadata["deleted_at"] = deleted_at
+            title = str(metadata.get("title", "task"))
+            deleted = self.write("work_task", title, metadata, item.body, item.path, log_action="삭제").as_dict()
+            if item_id == task_id:
+                deleted_primary = deleted
+        return deleted_primary
+
+    def task_order(self, item: dict[str, Any]) -> int:
+        try:
+            return int(item.get("order", 1_000_000))
+        except (TypeError, ValueError):
+            return 1_000_000
+
+    def task_scope(self, item: dict[str, Any]) -> tuple[str, str]:
+        return (str(item.get("project_id") or ""), str(item.get("parent_id") or ""))
+
+    def ensure_task_orders(self, notes: list[Note]) -> None:
+        groups: dict[tuple[str, str], list[Note]] = {}
+        for note in notes:
+            groups.setdefault(self.task_scope(note.metadata), []).append(note)
+        for group in groups.values():
+            ordered = sorted(
+                group,
+                key=lambda note: (
+                    self.task_order(note.metadata),
+                    note.metadata.get("start_date", ""),
+                    note.metadata.get("end_date", ""),
+                    note.metadata.get("created_at", ""),
+                    note.metadata.get("title", ""),
+                    note.metadata.get("id", ""),
+                ),
+            )
+            for index, note in enumerate(ordered):
+                if note.metadata.get("order") is not None and self.task_order(note.metadata) == index:
+                    continue
+                metadata = dict(note.metadata)
+                metadata["order"] = index
+                title = str(metadata.get("title", "task"))
+                written = self.write("work_task", title, metadata, note.body, note.path)
+                note.metadata = written.metadata
+                note.body = written.body
+                note.path = written.path
+
+    def next_task_order(self, project_id: str, parent_id: str, exclude_id: str | None = None) -> int:
+        orders = []
+        for note in self.list_notes("work_task"):
+            metadata = note.metadata
+            if exclude_id and metadata.get("id") == exclude_id:
+                continue
+            if self.task_scope(metadata) == (project_id or "", parent_id or ""):
+                orders.append(self.task_order(metadata))
+        valid_orders = [order for order in orders if order < 1_000_000]
+        return max(valid_orders, default=len(orders) - 1) + 1
 
     def create_todo(self, data: dict[str, Any]) -> dict[str, Any]:
         body = f"# {data['title']}\n\n{data.get('note', '').strip()}"
