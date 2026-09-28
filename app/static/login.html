@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>로그인 · ERP</title>
+    <link rel="stylesheet" href="/static/auth.css" />
+    <script src="/static/login.js" type="module"></script>
+  </head>
+  <body class="login-page">
+    <main class="login-card">
+      <a class="auth-brand" href="/">ERP<span>Our everyday workspace</span></a>
+      <h1>워크스페이스 로그인</h1><p class="auth-description">등록된 계정으로 업무를 이어가세요.</p>
+      <form id="login-form">
+        <fieldset>
+          <label for="login-id">ID</label><input id="login-id" name="login_id" autocomplete="username" maxlength="64" required autofocus />
+          <label for="login-password">비밀번호</label><input id="login-password" name="password" type="password" autocomplete="current-password" maxlength="128" required />
+          <p class="auth-notice error" id="login-notice" role="alert" hidden></p>
+          <button class="auth-primary" type="submit">로그인</button>
+        </fieldset>
+      </form>
+      <p class="auth-footnote">계정이 없으면 관리자에게 등록을 요청해 주세요.</p>
+    </main>
+  </body>
+</html>

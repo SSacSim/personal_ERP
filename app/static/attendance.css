@@ -1,0 +1,46 @@
+.attendance-page { display: grid; gap: 20px; }
+.attendance-page [hidden] { display: none !important; }
+.attendance-heading { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+.attendance-heading h2 { margin: 0; font-size: 20px; }
+.attendance-heading h2 span { margin-left: 8px; color: var(--muted); font-size: 12px; font-weight: 400; }
+.attendance-heading p { margin: 7px 0 0; color: var(--muted); font-size: 12px; }
+.attendance-heading > button { flex-shrink: 0; }
+.attendance-page fieldset { min-width: 0; padding: 0; margin: 0; border: 0; }
+.attendance-page label { display: grid; gap: 7px; color: var(--muted); font-size: 12px; }
+.attendance-page :is(input, select, textarea) { width: 100%; min-width: 0; color: var(--text); font: inherit; font-size: 13px; }
+.attendance-page input[readonly] { background: var(--surface-subtle); }
+.attendance-filters fieldset { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+.attendance-filters label { min-width: 145px; }
+.attendance-table-wrap { padding: 0; overflow-x: auto; }
+.attendance-table { width: 100%; border-collapse: collapse; text-align: left; font-size: 12px; }
+.attendance-table th { padding: 13px 18px; color: var(--muted); background: #f8faf9; font-size: 11px; font-weight: 500; }
+.attendance-table td { padding: 17px 18px; border-top: 1px solid var(--line); vertical-align: top; }
+.attendance-person { min-width: 90px; max-width: 170px; overflow-wrap: anywhere; font-weight: 500; }
+.attendance-date { min-width: 190px; font-variant-numeric: tabular-nums; }
+.attendance-memo { min-width: 120px; max-width: 400px; white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; color: var(--muted); }
+.attendance-badge { display: inline-block; padding: 4px 9px; border-radius: 6px; font-size: 11px; white-space: nowrap; }
+.attendance-badge.is-annual_leave { background: #eaf7f1; color: #267458; }
+.attendance-badge.is-half_day { background: #fff3e1; color: #93651a; }
+.attendance-badge.is-remote_work { background: #edf0ff; color: #5865a0; }
+.attendance-calendar-link { color: var(--accent); white-space: nowrap; text-decoration: none; }
+.attendance-calendar-link:hover { text-decoration: underline; }
+.attendance-table .attendance-empty { padding: 55px 20px; text-align: center; color: var(--muted); }
+.attendance-help { margin: -6px 0 0; font-size: 11px; color: var(--muted); }
+.attendance-notice { margin: 0; padding: 12px 15px; background: var(--accent-soft); border-radius: 9px; color: var(--accent); font-size: 12px; }
+.attendance-notice.is-error { background: #fff0ee; color: var(--danger); }
+.attendance-pagination { display: flex; justify-content: center; align-items: center; gap: 18px; font-size: 12px; color: var(--muted); }
+.attendance-dialog { width: min(500px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); padding: 28px; border: 1px solid var(--line); border-radius: 16px; color: var(--text); box-shadow: 0 24px 80px #1729202e; }
+.attendance-dialog::backdrop { background: #17292052; backdrop-filter: blur(4px); }
+.attendance-dialog > header { display: flex; align-items: start; justify-content: space-between; gap: 16px; margin-bottom: 24px; }
+.attendance-dialog h3 { margin: 0; font-size: 19px; }
+.attendance-dialog header p { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
+.attendance-dialog .attendance-notice { margin-bottom: 18px; }
+.attendance-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.attendance-fields .attendance-full { grid-column: 1 / -1; }
+.attendance-fields label.attendance-full { display: block; }
+.attendance-optional { margin-left: 4px; font-size: 10px; font-weight: 400; }
+.attendance-fields textarea { display: block; margin-top: 7px; resize: vertical; min-height: 100px; }
+.attendance-form-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 24px; }
+.attendance-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+@media (max-width: 760px) { .attendance-heading { align-items: flex-start; } .attendance-heading h2 { font-size: 18px; } .attendance-heading p { max-width: 260px; line-height: 1.7; } .attendance-dialog { padding: 22px; } .attendance-page :is(input, select, textarea) { font-size: 16px; } .attendance-table td, .attendance-table th { padding: 13px; } }
+@media (max-width: 420px) { .attendance-heading { flex-wrap: wrap; } .attendance-fields { grid-template-columns: 1fr; } }

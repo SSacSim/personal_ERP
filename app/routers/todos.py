@@ -1,8 +1,9 @@
 from datetime import date, timedelta
 import textwrap
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.auth import current_user
 from app.models import TodoCreate, TodoReorder, TodoUpdate
 from app.storage import parse_iso_date, vault
 from app.vault_answer import answer_with_codex_sdk
@@ -12,50 +13,53 @@ router = APIRouter(prefix="/api/todos", tags=["todos"])
 
 
 @router.get("")
-def list_todos(target_date: date | None = Query(default=None, alias="date")):
+def list_todos(target_date: date | None = Query(default=None, alias="date"), user: dict = Depends(current_user)):
     day = target_date or date.today()
-    vault.rollover_todos(day)
-    return {"items": vault.list_todos(day)}
+    vault.rollover_todos(day, user["id"])
+    return {"items": vault.list_todos(day, user["id"])}
 
 
 @router.post("", status_code=201)
-def create_todo(payload: TodoCreate):
-    return vault.create_todo(payload.model_dump())
+def create_todo(payload: TodoCreate, user: dict = Depends(current_user)):
+    return vault.create_todo(payload.model_dump(), user["id"])
 
 
 @router.patch("/{todo_id}")
-def update_todo(todo_id: str, payload: TodoUpdate):
-    updated = vault.update_todo(todo_id, payload.model_dump(exclude_unset=True))
+def update_todo(todo_id: str, payload: TodoUpdate, user: dict = Depends(current_user)):
+    updated = vault.update_todo(todo_id, payload.model_dump(exclude_unset=True), user["id"])
     if updated is None:
         raise HTTPException(status_code=404, detail="todo not found")
     return updated
 
 
 @router.delete("/{todo_id}")
-def delete_todo(todo_id: str):
-    deleted = vault.delete_todo(todo_id)
+def delete_todo(todo_id: str, user: dict = Depends(current_user)):
+    deleted = vault.delete_todo(todo_id, user["id"])
     if deleted is None:
         raise HTTPException(status_code=404, detail="todo not found")
     return {"deleted": True, "item": deleted}
 
 
 @router.post("/reorder")
-def reorder_todos(payload: TodoReorder):
-    return {"items": vault.reorder_todos(payload.ids)}
+def reorder_todos(payload: TodoReorder, user: dict = Depends(current_user)):
+    try:
+        return {"items": vault.reorder_todos(payload.ids, user["id"])}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="todo not found") from exc
 
 
 @router.post("/rollover")
-def rollover_todos(target_date: date | None = Query(default=None, alias="date")):
+def rollover_todos(target_date: date | None = Query(default=None, alias="date"), user: dict = Depends(current_user)):
     day = target_date or date.today()
-    return {"items": vault.rollover_todos(day)}
+    return {"items": vault.rollover_todos(day, user["id"])}
 
 
 @router.post("/weekly-report")
-def create_weekly_report(week_start: date | None = None):
+def create_weekly_report(week_start: date | None = None, user: dict = Depends(current_user)):
     today = date.today()
     start = week_start or default_report_week_start(today)
-    summary, mode, codex_error = summarize_weekly_report(start)
-    report = vault.weekly_report(start, codex_summary=summary)
+    summary, mode, codex_error = summarize_weekly_report(start, user["id"])
+    report = vault.weekly_report(start, user["id"], codex_summary=summary)
     report["mode"] = mode
     report["codex_error"] = codex_error
     report["basis"] = "이번주" if start == today - timedelta(days=today.weekday()) else "지난주"
@@ -71,17 +75,17 @@ def default_report_week_start(today: date) -> date:
     return this_monday - timedelta(days=7)
 
 
-def summarize_weekly_report(week_start: date) -> tuple[str | None, str, str]:
-    context = weekly_report_context(week_start)
+def summarize_weekly_report(week_start: date, user_id: str) -> tuple[str | None, str, str]:
+    context = weekly_report_context(week_start, user_id)
     prompt = textwrap.dedent(
         f"""
         너는 회사 내부 ERP의 Obsidian LLM Wiki를 읽고 주간 TODO 보고서를 정리하는 한국어 어시스턴트다.
-        현재 작업 디렉터리의 vault 폴더는 Obsidian 저장소이며, 필요하면 read-only로 관련 Markdown 노트를 확인해도 된다.
+        아래 CONTEXT는 로그인한 사용자의 개인 기록이다. 제공된 내용만 사용한다.
 
         기준:
         - 아래 TODO CONTEXT는 이미 보고서 기준 주차로 필터링되고, 이월된 같은 TODO는 하나의 업무로 통합된 목록이다.
         - 월~금에 생성하면 지난주 TODO, 토~일에 생성하면 이번주 TODO를 기준으로 삼는다. 이 기준 주차 계산은 서버가 이미 적용했다.
-        - TODO 목록을 주 근거로 삼고, vault/Wiki, vault/Projects, vault/Meetings, vault/Tasks의 관련 노트는 보조 맥락으로만 활용한다.
+        - TODO 목록을 주 근거로 삼고, CONTEXT에 포함된 작업 목록을 보조 맥락으로 사용한다.
         - 확인되지 않는 내용은 만들지 않는다.
 
         출력 형식:
@@ -114,10 +118,10 @@ def summarize_weekly_report(week_start: date) -> tuple[str | None, str, str]:
     return answer, "codex_sdk", ""
 
 
-def weekly_report_context(week_start: date) -> str:
+def weekly_report_context(week_start: date, user_id: str) -> str:
     week_end = week_start + timedelta(days=6)
     lines = [f"week: {week_start.isoformat()} ~ {week_end.isoformat()}"]
-    todo_groups = vault.weekly_todo_groups(week_start, week_end)
+    todo_groups = vault.weekly_todo_groups(week_start, week_end, user_id)
     if not todo_groups:
         lines.append("TODO: none")
     for item in todo_groups:
@@ -130,7 +134,7 @@ def weekly_report_context(week_start: date) -> str:
         )
 
     task_lines = []
-    for note in vault.list_notes("work_task"):
+    for note in vault.private_notes("work_task", user_id):
         if note.metadata.get("deleted") is True:
             continue
         start = parse_iso_date(note.metadata.get("start_date"))

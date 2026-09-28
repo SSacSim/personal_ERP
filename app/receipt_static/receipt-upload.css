@@ -1,0 +1,50 @@
+:root { color-scheme: light; font-family: "Pretendard", -apple-system, BlinkMacSystemFont, "Segoe UI", "Malgun Gothic", sans-serif; color: #243b32; background: #f6f8f7; }
+* { box-sizing: border-box; }
+body { margin: 0; line-height: 1.6; }
+[hidden] { display: none !important; }
+.upload-shell { width: min(100% - 32px, 560px); margin: 48px auto; padding: 32px; background: #fff; border: 1px solid #e4e9e6; border-radius: 20px; box-shadow: 0 8px 32px #243b3205; }
+.eyebrow { margin: 0 0 8px; color: #23745c; font-size: 12px; font-weight: 700; letter-spacing: 1px; }
+h1 { margin: 0; font-size: 27px; letter-spacing: -1px; }
+.intro { margin: 8px 0 28px; color: #65736a; font-size: 14px; }
+fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
+label { display: block; margin: 22px 0 8px; font-size: 14px; font-weight: 650; }
+label:first-child { margin-top: 0; }
+.required { margin-left: 4px; color: #65736a; font-weight: 400; font-size: 11px; }
+input, textarea, button { font: inherit; }
+input[type="text"], textarea { width: 100%; padding: 12px 14px; border: 1px solid #dce4de; border-radius: 9px; background: #fff; color: inherit; font-size: 16px; }
+textarea { resize: vertical; min-height: 120px; }
+input::placeholder, textarea::placeholder { color: #89968d; font-size: 14px; }
+:where(input, textarea, button):focus-visible { outline: 3px solid #9ac5b1; outline-offset: 3px; }
+.photo-field { padding: 18px; border: 1px dashed #b8cdbf; border-radius: 12px; background: #f8faf9; }
+input[type="file"] { max-width: 100%; width: 100%; font-size: 13px; }
+input::file-selector-button { margin-right: 12px; padding: 9px 12px; border: 0; border-radius: 7px; color: #23745c; background: #e4f0e9; cursor: pointer; }
+.hint { margin: 10px 0 0; font-size: 12px; color: #65736a; }
+.selection-count { margin: 14px 0 0; color: #23745c; font-size: 12px; font-weight: 650; }
+.preview-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; max-height: 420px; overflow-y: auto; margin-top: 14px; overscroll-behavior: contain; }
+.preview-card { min-width: 0; padding: 10px; border: 1px solid #dce4de; border-radius: 10px; background: #fff; }
+.preview-card[data-status="saved"] { border-color: #8fbea5; background: #f0f7f3; }
+.preview-card[data-status="error"], .preview-card.is-invalid { border-color: #e7b5ad; }
+.preview-card img { display: block; height: 150px; width: 100%; object-fit: contain; border-radius: 5px; background: #f6f8f7; }
+.preview-filename { margin: 8px 0 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.preview-size, .preview-state { margin: 0; color: #65736a; font-size: 11px; }
+.preview-state { margin-top: 5px; color: #23745c; }
+.preview-card[data-status="error"] .preview-state, .preview-card.is-invalid .preview-state { color: #a32c22; overflow-wrap: anywhere; }
+.preview-card .remove-photo { width: auto; margin-top: 8px; padding: 5px 9px; border-radius: 6px; color: #65736a; background: #f0f3f1; font-size: 11px; }
+.preview-card .remove-photo:hover { color: #a32c22; background: #fff0ee; }
+.upload-progress { margin-top: 20px; }
+.upload-progress label { margin: 0 0 7px; color: #23745c; font-size: 12px; }
+.upload-progress progress { display: block; width: 100%; height: 9px; accent-color: #23745c; }
+input[readonly], textarea[readonly] { background: #f6f8f7; color: #65736a; }
+.date-note { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 22px; padding: 12px 14px; background: #f6f8f7; border-radius: 8px; font-size: 12px; }
+.date-note span { color: #65736a; }
+.date-note strong { font-weight: 500; }
+button { width: 100%; margin-top: 24px; padding: 14px; border: 0; border-radius: 10px; background: #23745c; color: white; font-weight: 650; cursor: pointer; }
+button:hover { background: #195c48; }
+button:disabled { opacity: .65; cursor: wait; }
+.notice { margin-bottom: 22px; padding: 16px; border-radius: 10px; background: #edf5f0; color: #195c48; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; }
+.notice.error { background: #fff0ee; color: #a32c22; }
+footer { margin-top: 26px; font-size: 12px; text-align: center; color: #65736a; }
+footer a { color: #23745c; }
+footer .receipt-logout { width: auto; margin: 8px 0 0; padding: 4px; color: #23745c; background: transparent; font-size: 12px; font-weight: 400; }
+@media (max-width: 600px) { .upload-shell { margin: 20px auto; padding: 24px 20px; border-radius: 16px; } h1 { font-size: 24px; } }
+@media (max-width: 380px) { .preview-list { grid-template-columns: minmax(0, 1fr); } }

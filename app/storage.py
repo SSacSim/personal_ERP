@@ -9,6 +9,7 @@ from typing import Any
 from uuid import uuid4
 
 from app.config import VAULT_DIR
+from app.companies import CompanyStore
 
 
 FOLDERS = {
@@ -22,6 +23,8 @@ FOLDERS = {
     "project_record": "Records",
     "report": "Reports",
 }
+
+PRIVATE_NOTE_TYPES = frozenset({"work_task", "todo", "report"})
 
 CHANGE_LOG_HEADING = "## 변경 로그"
 ASSET_CONTENT_TYPES = {
@@ -194,6 +197,7 @@ class Note:
 class ObsidianVault:
     def __init__(self, root: Path = VAULT_DIR) -> None:
         self.root = root
+        self.companies = CompanyStore(root / "Companies")
         self.ensure()
 
     def ensure(self) -> None:
@@ -204,7 +208,7 @@ class ObsidianVault:
         readme = self.root / "README.md"
         if not readme.exists():
             readme.write_text(
-                "# GAI ERP Vault\n\n"
+                "# ERP Vault\n\n"
                 "이 폴더는 ERP 데이터의 원본 저장소입니다. 각 항목은 Markdown 노트와 frontmatter로 저장되어 Obsidian과 LLM Wiki에서 바로 읽을 수 있습니다.\n",
                 encoding="utf-8",
             )
@@ -500,11 +504,45 @@ class ObsidianVault:
                 )
         return sorted(entries, key=lambda item: (item.get("person", ""), item.get("category", ""), item.get("title", "")))
 
-    def create_task(self, data: dict[str, Any]) -> dict[str, Any]:
+    def private_notes(self, note_type: str, user_id: str) -> list[Note]:
+        if not user_id:
+            raise ValueError("user_id is required for private notes")
+        return [note for note in self.list_notes(note_type) if note.metadata.get("user_id") == user_id]
+
+    def private_note(self, note_type: str, note_id: str, user_id: str) -> Note | None:
+        return next((note for note in self.private_notes(note_type, user_id)
+                     if note.metadata.get("id") == note_id and note.metadata.get("deleted") is not True), None)
+
+    def migrate_private_notes(self, user_id: str) -> int:
+        """Assign pre-login records once, preserving paths, contents and timestamps."""
+        if not user_id:
+            raise ValueError("a legacy owner is required")
+        migrated = 0
+        for note_type in PRIVATE_NOTE_TYPES:
+            for note in self.list_notes(note_type):
+                if note.metadata.get("user_id"):
+                    continue
+                # Change only the ownership field, including a legacy blank value.
+                # Keep the original body, timestamps and newline bytes verbatim.
+                raw = note.path.read_bytes()
+                newline = b"\r\n" if raw.startswith(b"---\r\n") else b"\n"
+                boundary = raw.index(newline + b"---" + newline, 3)
+                frontmatter = raw[:boundary]
+                field = f"user_id: {encode_value(user_id)}".encode("utf-8")
+                if re.search(rb"(?m)^user_id:", frontmatter):
+                    frontmatter = re.sub(rb"(?m)^user_id:[^\r\n]*", lambda match: field, frontmatter)
+                else:
+                    frontmatter = frontmatter.replace(b"---" + newline, b"---" + newline + field + newline, 1)
+                note.path.write_bytes(frontmatter + raw[boundary:])
+                migrated += 1
+        return migrated
+
+    def create_task(self, data: dict[str, Any], user_id: str) -> dict[str, Any]:
         project_id = data.get("project_id") or ""
         parent_id = data.get("parent_id") or ""
         body = f"# {data['title']}\n\n{data.get('description', '').strip()}"
         metadata = {
+            "user_id": user_id,
             "title": data["title"],
             "start_date": str(data["start_date"]),
             "end_date": str(data["end_date"]),
@@ -515,18 +553,18 @@ class ObsidianVault:
             "owner": data.get("owner") or "",
             "status": data.get("status", "todo"),
             "priority": data.get("priority", "normal"),
-            "order": data.get("order") if data.get("order") is not None else self.next_task_order(project_id, parent_id),
+            "order": data.get("order") if data.get("order") is not None else self.next_task_order(project_id, parent_id, user_id),
         }
         return self.write("work_task", data["title"], metadata, body, log_action="등록").as_dict()
 
-    def list_tasks(self) -> list[dict[str, Any]]:
-        notes = [note for note in self.list_notes("work_task") if note.metadata.get("deleted") is not True]
+    def list_tasks(self, user_id: str) -> list[dict[str, Any]]:
+        notes = [note for note in self.private_notes("work_task", user_id) if note.metadata.get("deleted") is not True]
         self.ensure_task_orders(notes)
         items = [note.as_dict() for note in notes]
         return sorted(items, key=lambda item: (item.get("project_id", ""), item.get("parent_id", ""), self.task_order(item), item.get("created_at", ""), item.get("title", "")))
 
-    def update_task(self, task_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
-        note = self.find_by_id("work_task", task_id)
+    def update_task(self, task_id: str, updates: dict[str, Any], user_id: str) -> dict[str, Any] | None:
+        note = self.private_note("work_task", task_id, user_id)
         if note is None or note.metadata.get("deleted") is True:
             return None
         metadata = dict(note.metadata)
@@ -536,10 +574,10 @@ class ObsidianVault:
         next_parent_id = updates.get("parent_id", current_parent_id) or ""
         moved_scope = (next_project_id, next_parent_id) != (current_project_id, current_parent_id)
         for key, value in updates.items():
-            if value is not None:
+            if value is not None and key != "user_id":
                 metadata[key] = str(value) if isinstance(value, date) else value
         if moved_scope and "order" not in updates:
-            metadata["order"] = self.next_task_order(next_project_id, next_parent_id, exclude_id=task_id)
+            metadata["order"] = self.next_task_order(next_project_id, next_parent_id, user_id, exclude_id=task_id)
         title = metadata.get("title", "task")
         body = note.body
         if "description" in updates and updates["description"] is not None:
@@ -547,11 +585,11 @@ class ObsidianVault:
         fields = [key for key, value in updates.items() if value is not None]
         return self.write("work_task", str(title), metadata, body, note.path, log_action="수정", log_fields=fields).as_dict()
 
-    def delete_task(self, task_id: str) -> dict[str, Any] | None:
-        note = self.find_by_id("work_task", task_id)
+    def delete_task(self, task_id: str, user_id: str) -> dict[str, Any] | None:
+        note = self.private_note("work_task", task_id, user_id)
         if note is None or note.metadata.get("deleted") is True:
             return None
-        notes = [item for item in self.list_notes("work_task") if item.metadata.get("deleted") is not True]
+        notes = [item for item in self.private_notes("work_task", user_id) if item.metadata.get("deleted") is not True]
         delete_ids = {task_id}
         changed = True
         while changed:
@@ -614,10 +652,12 @@ class ObsidianVault:
                 note.body = written.body
                 note.path = written.path
 
-    def next_task_order(self, project_id: str, parent_id: str, exclude_id: str | None = None) -> int:
+    def next_task_order(self, project_id: str, parent_id: str, user_id: str, exclude_id: str | None = None) -> int:
         orders = []
-        for note in self.list_notes("work_task"):
+        for note in self.private_notes("work_task", user_id):
             metadata = note.metadata
+            if metadata.get("deleted") is True:
+                continue
             if exclude_id and metadata.get("id") == exclude_id:
                 continue
             if self.task_scope(metadata) == (project_id or "", parent_id or ""):
@@ -625,15 +665,16 @@ class ObsidianVault:
         valid_orders = [order for order in orders if order < 1_000_000]
         return max(valid_orders, default=len(orders) - 1) + 1
 
-    def create_todo(self, data: dict[str, Any]) -> dict[str, Any]:
+    def create_todo(self, data: dict[str, Any], user_id: str) -> dict[str, Any]:
         body = f"# {data['title']}\n\n{data.get('note', '').strip()}"
         todo_date = str(data["date"])
         metadata = {
+            "user_id": user_id,
             "title": data["title"],
             "date": todo_date,
             "project_id": data.get("project_id") or "",
             "priority": data.get("priority", "normal"),
-            "order": data.get("order") if data.get("order") is not None else self.next_todo_order(todo_date),
+            "order": data.get("order") if data.get("order") is not None else self.next_todo_order(todo_date, user_id),
             "completed": False,
             "rolled_over_to": "",
             "source_id": data.get("source_id", ""),
@@ -642,9 +683,9 @@ class ObsidianVault:
             metadata["origin_created_at"] = data["origin_created_at"]
         return self.write("todo", data["title"], metadata, body, log_action="등록").as_dict()
 
-    def list_todos(self, target_date: date) -> list[dict[str, Any]]:
+    def list_todos(self, target_date: date, user_id: str) -> list[dict[str, Any]]:
         items = []
-        notes = self.list_notes("todo")
+        notes = self.private_notes("todo", user_id)
         notes_by_id = {note.metadata.get("id"): note for note in notes}
         for note in notes:
             if note.metadata.get("deleted") is True:
@@ -665,20 +706,20 @@ class ObsidianVault:
         except (TypeError, ValueError):
             return 1_000_000
 
-    def next_todo_order(self, target_date: str) -> int:
+    def next_todo_order(self, target_date: str, user_id: str) -> int:
         orders = []
-        for note in self.list_notes("todo"):
+        for note in self.private_notes("todo", user_id):
             if note.metadata.get("deleted") is not True and note.metadata.get("date") == target_date:
                 orders.append(self.todo_order(note.metadata))
         return max(orders, default=-1) + 1
 
-    def update_todo(self, todo_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
-        note = self.find_by_id("todo", todo_id)
+    def update_todo(self, todo_id: str, updates: dict[str, Any], user_id: str) -> dict[str, Any] | None:
+        note = self.private_note("todo", todo_id, user_id)
         if note is None or note.metadata.get("deleted") is True:
             return None
         metadata = dict(note.metadata)
         for key, value in updates.items():
-            if value is not None:
+            if value is not None and key != "user_id":
                 metadata[key] = value
         title = str(metadata.get("title", "todo"))
         body = note.body
@@ -687,11 +728,11 @@ class ObsidianVault:
         fields = [key for key, value in updates.items() if value is not None]
         updated = self.write("todo", title, metadata, body, note.path, log_action="수정", log_fields=fields).as_dict()
         if "completed" in updates and updates["completed"] is not None:
-            self.sync_related_todo_completion(str(metadata.get("id", todo_id)), bool(updates["completed"]))
+            self.sync_related_todo_completion(str(metadata.get("id", todo_id)), bool(updates["completed"]), user_id)
         return updated
 
-    def related_todo_notes(self, todo_id: str) -> list[Note]:
-        notes = [note for note in self.list_notes("todo") if note.metadata.get("deleted") is not True]
+    def related_todo_notes(self, todo_id: str, user_id: str) -> list[Note]:
+        notes = [note for note in self.private_notes("todo", user_id) if note.metadata.get("deleted") is not True]
         id_to_note = {str(note.metadata.get("id")): note for note in notes if note.metadata.get("id")}
         related_ids = {todo_id}
         changed = True
@@ -715,8 +756,8 @@ class ObsidianVault:
                     changed = True
         return [note for note_id, note in id_to_note.items() if note_id in related_ids]
 
-    def sync_related_todo_completion(self, todo_id: str, completed: bool) -> None:
-        for related in self.related_todo_notes(todo_id):
+    def sync_related_todo_completion(self, todo_id: str, completed: bool, user_id: str) -> None:
+        for related in self.related_todo_notes(todo_id, user_id):
             related_id = str(related.metadata.get("id", ""))
             if related_id == todo_id or related.metadata.get("completed") is completed:
                 continue
@@ -725,8 +766,8 @@ class ObsidianVault:
             title = str(metadata.get("title", "todo"))
             self.write("todo", title, metadata, related.body, related.path, log_action="수정", log_fields=["completed"])
 
-    def delete_todo(self, todo_id: str) -> dict[str, Any] | None:
-        note = self.find_by_id("todo", todo_id)
+    def delete_todo(self, todo_id: str, user_id: str) -> dict[str, Any] | None:
+        note = self.private_note("todo", todo_id, user_id)
         if note is None or note.metadata.get("deleted") is True:
             return None
         metadata = dict(note.metadata)
@@ -736,21 +777,21 @@ class ObsidianVault:
         title = str(metadata.get("title", "todo"))
         return self.write("todo", title, metadata, note.body, note.path, log_action="삭제").as_dict()
 
-    def reorder_todos(self, todo_ids: list[str]) -> list[dict[str, Any]]:
+    def reorder_todos(self, todo_ids: list[str], user_id: str) -> list[dict[str, Any]]:
+        notes = [self.private_note("todo", todo_id, user_id) for todo_id in todo_ids]
+        if any(note is None for note in notes):
+            raise ValueError("todo not found")
         updated = []
-        for index, todo_id in enumerate(todo_ids):
-            note = self.find_by_id("todo", todo_id)
-            if note is None or note.metadata.get("deleted") is True:
-                continue
+        for index, note in enumerate(notes):
             metadata = dict(note.metadata)
             metadata["order"] = index
             title = str(metadata.get("title", "todo"))
             updated.append(self.write("todo", title, metadata, note.body, note.path).as_dict())
         return updated
 
-    def rollover_todos(self, target_date: date) -> list[dict[str, Any]]:
+    def rollover_todos(self, target_date: date, user_id: str) -> list[dict[str, Any]]:
         rolled = []
-        for note in self.list_notes("todo"):
+        for note in self.private_notes("todo", user_id):
             if note.metadata.get("deleted") is True:
                 continue
             todo_date = parse_iso_date(note.metadata.get("date"))
@@ -768,7 +809,7 @@ class ObsidianVault:
                 "origin_created_at": note.metadata.get("origin_created_at") or note.metadata.get("created_at", ""),
                 "source_id": note.metadata.get("id", ""),
             }
-            new_note = self.create_todo(data)
+            new_note = self.create_todo(data, user_id)
             note.metadata["rolled_over_to"] = new_note["id"]
             self.write("todo", str(note.metadata.get("title", "Todo")), note.metadata, note.body, note.path, log_action="자동 이월", log_fields=["rolled_over_to"])
             rolled.append(new_note)
@@ -831,7 +872,16 @@ class ObsidianVault:
         fields = [key for key, value in updates.items() if value is not None]
         return self.write("project", name, metadata, body, note.path, log_action="수정", log_fields=fields).as_dict()
 
+    def meeting_company(self, company_id: str | None) -> dict[str, str]:
+        if not company_id:
+            return {"company_id": "", "company_name": ""}
+        company = self.companies.get(company_id)
+        if company is None:
+            raise ValueError("등록된 회사를 선택해 주세요.")
+        return {"company_id": company["id"], "company_name": company["name"]}
+
     def create_meeting(self, data: dict[str, Any]) -> dict[str, Any]:
+        company = self.meeting_company(data.get("company_id"))
         attendees = data.get("attendees", [])
         project_id = data.get("project_id") or ""
         body = self.meeting_body(data)
@@ -839,16 +889,22 @@ class ObsidianVault:
             "title": data["title"],
             "date": str(data["date"]),
             "project_id": project_id,
+            **company,
             "start_time": data.get("start_time") or "",
             "attendees": attendees,
             "images": data.get("images", []),
         }
         return self.write("meeting", data["title"], metadata, body, log_action="등록").as_dict()
 
-    def list_meetings(self, project_id: str | None = None) -> list[dict[str, Any]]:
+    def list_meetings(self, project_id: str | None = None, company_id: str | None = None) -> list[dict[str, Any]]:
         items = [note.as_dict() for note in self.list_notes("meeting") if note.metadata.get("deleted") is not True]
+        for item in items:
+            item.setdefault("company_id", "")
+            item.setdefault("company_name", "")
         if project_id is not None:
             items = [item for item in items if item.get("project_id") == project_id]
+        if company_id is not None:
+            items = [item for item in items if item.get("company_id") == company_id]
         return sorted(items, key=lambda item: (item.get("date", ""), item.get("start_time", ""), item.get("created_at", "")), reverse=True)
 
     def update_meeting(self, meeting_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
@@ -856,9 +912,13 @@ class ObsidianVault:
         if note is None or note.metadata.get("deleted") is True:
             return None
         metadata = dict(note.metadata)
+        if "company_id" in updates:
+            metadata.update(self.meeting_company(updates["company_id"]))
         for key in ["title", "date", "project_id", "start_time", "attendees", "images"]:
             if key in updates and updates[key] is not None:
                 metadata[key] = str(updates[key]) if isinstance(updates[key], date) else updates[key]
+        if "start_time" in updates and updates["start_time"] is None:
+            metadata["start_time"] = ""
         title = str(metadata.get("title", "meeting"))
         body = note.body
         if any(key in updates for key in ["agenda", "notes", "attendees", "title"]):
@@ -868,8 +928,9 @@ class ObsidianVault:
                 "agenda": updates.get("agenda", self.meeting_section(note.body, "안건")),
                 "notes": updates.get("notes", self.meeting_section(note.body, "회의 내용")),
             }
-            body = self.meeting_body(payload)
-        fields = [key for key, value in updates.items() if value is not None]
+            content = self.meeting_body(payload).split("\n", 1)[1]
+            body = body_with_replaced_content(note.body, title, content)
+        fields = [key for key, value in updates.items() if value is not None or key == "company_id"]
         return self.write("meeting", title, metadata, body, note.path, log_action="수정", log_fields=fields).as_dict()
 
     def delete_meeting(self, meeting_id: str) -> dict[str, Any] | None:
@@ -901,10 +962,14 @@ class ObsidianVault:
 
     def meeting_section(self, body: str, heading: str) -> str:
         content, _ = split_change_log(body)
-        match = re.search(rf"(?ms)^## {re.escape(heading)}\s*(.*?)(?=^## |\Z)", content)
-        if not match:
+        lines = content.splitlines()
+        start = next((index for index, line in enumerate(lines) if line.strip() == f"## {heading}"), None)
+        if start is None:
             return ""
-        return match.group(1).strip()
+        next_heading = {"참석자": "안건", "안건": "회의 내용"}.get(heading)
+        end = next((index for index in range(start + 1, len(lines))
+                    if next_heading and lines[index].strip() == f"## {next_heading}"), len(lines))
+        return "\n".join(lines[start + 1:end]).strip()
 
     def create_project_record(self, data: dict[str, Any]) -> dict[str, Any]:
         project_id = data.get("project_id") or ""
@@ -995,9 +1060,9 @@ class ObsidianVault:
         title = str(metadata.get("title", "wiki"))
         return self.write("wiki_page", title, metadata, note.body, note.path, log_action="삭제").as_dict()
 
-    def weekly_todo_groups(self, week_start: date, week_end: date) -> list[dict[str, Any]]:
+    def weekly_todo_groups(self, week_start: date, week_end: date, user_id: str) -> list[dict[str, Any]]:
         all_todos = []
-        for note in self.list_notes("todo"):
+        for note in self.private_notes("todo", user_id):
             if note.metadata.get("deleted") is True:
                 continue
             all_todos.append(note.as_dict())
@@ -1042,11 +1107,13 @@ class ObsidianVault:
             seen.add(current_id)
             current = todos_by_id[source_id]
 
-    def weekly_report(self, week_start: date, codex_summary: str | None = None) -> dict[str, Any]:
+    def weekly_report(self, week_start: date, user_id: str, codex_summary: str | None = None) -> dict[str, Any]:
         week_end = week_start + timedelta(days=6)
-        todo_groups = self.weekly_todo_groups(week_start, week_end)
+        todo_groups = self.weekly_todo_groups(week_start, week_end, user_id)
         tasks = []
-        for note in self.list_notes("work_task"):
+        for note in self.private_notes("work_task", user_id):
+            if note.metadata.get("deleted") is True:
+                continue
             start = parse_iso_date(note.metadata.get("start_date"))
             end = parse_iso_date(note.metadata.get("end_date"))
             if start and end and start <= week_end and end >= week_start:
@@ -1081,6 +1148,7 @@ class ObsidianVault:
         ]
         metadata = {
             "title": f"주간 TODO 보고서 {week_start.isoformat()}",
+            "user_id": user_id,
             "week_start": week_start.isoformat(),
             "week_end": week_end.isoformat(),
             "summary_mode": "codex_sdk" if codex_summary else "local",
@@ -1094,10 +1162,10 @@ class ObsidianVault:
         rollover_text = f" (이월 {int(item.get('count') or 1) - 1}회 정리)" if int(item.get("count") or 1) > 1 else ""
         return f"- [{item.get('date_label')}] {item.get('title')}{rollover_text}{detail_text}"
 
-    def dashboard(self, target_date: date) -> dict[str, Any]:
-        self.rollover_todos(target_date)
+    def dashboard(self, target_date: date, user_id: str) -> dict[str, Any]:
+        self.rollover_todos(target_date, user_id)
         tomorrow = target_date + timedelta(days=1)
-        todos = self.list_todos(target_date)
+        todos = self.list_todos(target_date, user_id)
         events = self.list_calendar_events(target_date=target_date)
         tomorrow_events = self.list_calendar_events(target_date=tomorrow)
         all_meetings = self.list_meetings()
@@ -1109,7 +1177,7 @@ class ObsidianVault:
             [meeting for meeting in all_meetings if meeting.get("date") == tomorrow.isoformat()],
             key=lambda item: (item.get("start_time", ""), item.get("title", "")),
         )
-        tasks = self.list_tasks()
+        tasks = self.list_tasks(user_id)
         active_tasks = [
             task
             for task in tasks

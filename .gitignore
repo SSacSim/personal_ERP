@@ -21,3 +21,31 @@ vault/Files/Uploads/**
 !vault/Files/Uploads/
 !vault/Files/Uploads/**/
 !vault/Files/Uploads/**/.gitkeep
+
+# Login credentials and sessions must remain local.
+vault/Auth/**
+!vault/Auth/.gitkeep
+
+# Chat history, account participation, and shared attachments are local data.
+vault/Chat/**
+!vault/Chat/.gitkeep
+
+# Receipt details and original photos are local data.
+vault/Receipts/**
+!vault/Receipts/.gitkeep
+
+# Shared account details stay in the local workspace.
+vault/IdInfo/**
+!vault/IdInfo/.gitkeep
+
+# Registered meeting companies are local workspace data.
+vault/Companies/**
+!vault/Companies/.gitkeep
+
+# Remote work records are local workspace data.
+vault/RemoteWork/**
+!vault/RemoteWork/.gitkeep
+
+# Shared Pomodoro execution history is local workspace data.
+vault/Pomodoro/**
+!vault/Pomodoro/.gitkeep

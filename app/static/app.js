@@ -1,15 +1,41 @@
+import { mountTeamChat } from "./team-chat.js?v=20260928-account-profile";
+import { mountReceipts } from "./receipts.js";
+import { mountIdInfo } from "./id-info.js?v=20260928-info-lock";
+import { mountPomodoro, mountPomodoroIndicator } from "./pomodoro.js";
+import { mountRemoteWork } from "./remote-work.js";
+import { mountAttendance } from "./attendance.js";
+import { requireSession, setupAccountBar, currentUser, userStorageKey } from "./auth-state.js";
+import { setupSidebarOrder } from "./sidebar-order.js?v=20260928";
+
+await requireSession();
+setupAccountBar();
+
 const view = document.querySelector("#view");
+let disposeTeamChat = null;
+let disposeReceipts = null;
+let disposeIdInfo = null;
+let disposePomodoro = null;
+let disposeRemoteWork = null;
+let disposeAttendance = null;
+let documentRenderSequence = 0;
+let meetingCompanies = [];
 const pageTitle = document.querySelector("#page-title");
 const todayLabel = document.querySelector("#today-label");
 
 const titles = {
   dashboard: "대시보드",
-  calendar: "달력",
+  calendar: "캘린더",
+  attendance: "연차·반차·재택",
   tasks: "작업 타임라인",
-  todos: "TODO",
+  todos: "할 일",
   projects: "프로젝트",
   meetings: "회의록",
-  wiki: "Wiki",
+  wiki: "위키",
+  chat: "팀 채팅",
+  receipts: "영수증",
+  "id-info": "Info",
+  pomodoro: "뽀모도로",
+  "remote-work": "재택근무 기록",
 };
 
 let calendarMonth = startOfMonth(new Date());
@@ -50,12 +76,27 @@ const chatMessages = [
 ];
 const collapsedTaskGroups = new Set();
 const TASK_GANTT_DAY_WIDTH = 52;
-const TASK_GANTT_LEFT_WIDTH = 560;
 
-todayLabel.textContent = toDateInputValue(new Date());
+setupSidebar();
+setupSidebarOrder(document.querySelector(".nav"), userStorageKey("erp.sidebar.order.v1"));
+todayLabel.dateTime = toDateInputValue(new Date());
+todayLabel.textContent = new Intl.DateTimeFormat("ko-KR", {
+  month: "long", day: "numeric", weekday: "short",
+}).format(new Date());
+todayLabel.title = new Intl.DateTimeFormat("ko-KR", {
+  year: "numeric", month: "long", day: "numeric", weekday: "short",
+}).format(new Date());
+todayLabel.setAttribute("aria-label", todayLabel.title);
 setupChatWidget();
+const pomodoroIndicator = mountPomodoroIndicator(() => {
+  history.pushState({}, "", "/pomodoro");
+  renderRoute("pomodoro");
+  view.focus({ preventScroll: true });
+});
 
 document.querySelectorAll(".nav a").forEach((link) => {
+  link.setAttribute("aria-label", titles[link.dataset.route]);
+  link.title = titles[link.dataset.route];
   link.addEventListener("click", (event) => {
     event.preventDefault();
     const route = link.dataset.route;
@@ -113,6 +154,42 @@ window.addEventListener("keydown", (event) => {
 });
 renderRoute(currentRoute());
 
+function setupSidebar() {
+  const key = "erp.sidebar.collapsed.v1";
+  const sidebar = document.querySelector("#erp-sidebar");
+  const toggle = document.querySelector("#sidebar-toggle");
+  const expand = document.querySelector("#sidebar-expand");
+  let collapsed = false;
+  try { collapsed = localStorage.getItem(key) === "true"; } catch { /* Use the default if storage is unavailable. */ }
+
+  function apply(value) {
+    collapsed = value;
+    const restoreFocus = collapsed ? sidebar.contains(document.activeElement) : document.activeElement === expand;
+    sidebar.hidden = collapsed;
+    expand.hidden = !collapsed;
+    document.body.classList.toggle("sidebar-collapsed", collapsed);
+    toggle.setAttribute("aria-expanded", String(!collapsed));
+    expand.setAttribute("aria-expanded", String(!collapsed));
+    if (restoreFocus) (collapsed ? expand : toggle).focus({ preventScroll: true });
+    if (!collapsed) {
+      const nav = sidebar.querySelector(".nav");
+      const active = nav.querySelector(".active");
+      if (active && nav.scrollWidth > nav.clientWidth) nav.scrollLeft += active.getBoundingClientRect().left - nav.getBoundingClientRect().left - 12;
+    }
+  }
+
+  apply(collapsed);
+  [toggle, expand].forEach((button) => {
+    button.addEventListener("click", () => {
+      apply(!collapsed);
+      try { localStorage.setItem(key, String(collapsed)); } catch { /* Keep the control usable without storage. */ }
+    });
+  });
+  window.addEventListener("storage", (event) => {
+    if (event.key === key || event.key === null) apply(event.newValue === "true");
+  });
+}
+
 function setupChatWidget() {
   const widget = document.createElement("section");
   widget.className = "chat-widget";
@@ -134,7 +211,7 @@ function renderChatWidget() {
             <strong>노트 상담봇</strong>
             <span>Obsidian 저장 내용을 기반으로 답변합니다</span>
           </div>
-          <button class="chat-close" type="button" data-chat-close aria-label="채팅 닫기">X</button>
+          <button class="chat-close" type="button" data-chat-close aria-label="채팅 닫기">${icon("close")}</button>
         </div>
         <div class="chat-messages" data-chat-messages>
           ${chatMessages.map(chatMessageHtml).join("")}
@@ -149,7 +226,7 @@ function renderChatWidget() {
   widget.innerHTML = `
     ${panelHtml}
     <button class="chat-launcher ${chatWidgetOpen ? "active" : ""}" type="button" data-chat-toggle aria-label="${chatWidgetOpen ? "채팅 닫기" : "상담 채팅 열기"}">
-      <span class="chat-launcher-icon" aria-hidden="true"></span>
+      ${icon(chatWidgetOpen ? "close" : "chat")}
     </button>
   `;
 
@@ -272,6 +349,28 @@ async function api(path, options = {}) {
 }
 
 function renderRoute(route) {
+  disposeTeamChat?.();
+  disposeTeamChat = null;
+  disposeReceipts?.();
+  disposeReceipts = null;
+  disposeIdInfo?.();
+  disposeIdInfo = null;
+  disposePomodoro?.();
+  disposePomodoro = null;
+  disposeRemoteWork?.();
+  disposeRemoteWork = null;
+  disposeAttendance?.();
+  disposeAttendance = null;
+  if (route === "calendar") {
+    const params = new URLSearchParams(location.search);
+    const dateValue = params.get("date");
+    if (/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(dateValue || "") && Number.isFinite(Date.parse(`${dateValue}T00:00:00`))) {
+      calendarMonth = startOfMonth(new Date(`${dateValue}T00:00:00`));
+      selectedCalendarDate = dateValue;
+      calendarDialogDate = dateValue;
+      calendarDetailEventId = params.get("event") || null;
+    }
+  }
   if (route !== "calendar") {
     calendarDialogDate = null;
     calendarDetailEventId = null;
@@ -303,9 +402,18 @@ function renderRoute(route) {
   }
   document.querySelectorAll(".nav a").forEach((link) => {
     link.classList.toggle("active", link.dataset.route === route);
+    if (link.dataset.route === route) link.setAttribute("aria-current", "page");
+    else link.removeAttribute("aria-current");
   });
+  const navigation = document.querySelector(".nav");
+  const activeLink = navigation.querySelector(".active");
+  if (activeLink && navigation.scrollWidth > navigation.clientWidth) {
+    navigation.scrollLeft += activeLink.getBoundingClientRect().left - navigation.getBoundingClientRect().left - 12;
+  }
   document.body.dataset.route = route;
+  pomodoroIndicator.refresh();
   pageTitle.textContent = titles[route];
+  document.title = `${titles[route]} · ERP`;
 
   const renderers = {
     dashboard: renderDashboard,
@@ -315,6 +423,12 @@ function renderRoute(route) {
     projects: renderProjects,
     meetings: renderMeetings,
     wiki: renderWiki,
+    chat: async () => { disposeTeamChat = mountTeamChat(view); },
+    receipts: async () => { disposeReceipts = mountReceipts(view); },
+    "id-info": async () => { disposeIdInfo = mountIdInfo(view); },
+    pomodoro: async () => { disposePomodoro = mountPomodoro(view); },
+    "remote-work": async () => { disposeRemoteWork = mountRemoteWork(view); },
+    attendance: async () => { disposeAttendance = mountAttendance(view); },
   };
   renderers[route]().catch((error) => {
     view.innerHTML = `<div class="panel"><p class="empty">${escapeHtml(error.message)}</p></div>`;
@@ -328,22 +442,20 @@ async function renderDashboard() {
   const todayData = data.today || { date: data.date, absences: data.absences || [], meetings: data.meetings || [], events: data.events || [] };
   const tomorrowData = data.tomorrow_day || { date: data.tomorrow, absences: data.tomorrow_absences || [], meetings: data.tomorrow_meetings || [], events: data.tomorrow_events || [] };
   view.innerHTML = `
-    <section class="stats">
-      ${stat("오늘 TODO", `${counts.todos_done}/${counts.todos_total}`)}
-      ${stat("오늘 부재", `${counts.absence_people || 0}명`)}
-      ${stat("내일 부재", `${counts.absence_people_tomorrow || 0}명`)}
-      ${stat("오늘 회의", counts.meetings_today || 0)}
-      ${stat("내일 회의", counts.meetings_tomorrow || 0)}
-      ${stat("진행 작업", counts.active_tasks)}
-      ${stat("진행 프로젝트", counts.active_projects)}
+    <section class="stats" aria-label="업무 요약">
+      ${stat("나의 할 일", `${counts.todos_done || 0}`, "check", `전체 ${counts.todos_total || 0}개 중 완료`, "green", `/ ${counts.todos_total || 0}`)}
+      ${stat("오늘 회의", counts.meetings_today || 0, "people", `내일 예정된 회의 ${counts.meetings_tomorrow || 0}건`, "blue", "건")}
+      ${stat("오늘 휴가 · 부재", counts.absence_people || 0, "coffee", `내일 부재 예정 ${counts.absence_people_tomorrow || 0}명`, "amber", "명")}
+      ${stat("진행 프로젝트", counts.active_projects || 0, "folder", `내 진행 작업 ${counts.active_tasks || 0}개`, "violet", "개")}
     </section>
+    <div class="dashboard-section-heading"><div><span class="section-dot"></span><h2>팀의 하루</h2><span class="section-caption">오늘과 내일, 함께 확인해요</span></div><a class="text-link" href="/calendar">캘린더 보기 ${icon("arrow")}</a></div>
     <section class="dashboard-day-grid">
       ${dashboardDayPanel("오늘", todayData, counts.absence_events || 0)}
       ${dashboardDayPanel("내일", tomorrowData, counts.absence_events_tomorrow || 0)}
     </section>
     <section class="panel dashboard-calendar-panel">
       <div class="section-head">
-        <h2>캘린더 일정</h2>
+        <h2>${icon("calendar")} 캘린더 일정</h2>
         <span class="badge">오늘 ${counts.events_today || 0}건 · 내일 ${counts.events_tomorrow || 0}건</span>
       </div>
       <div class="dashboard-schedule-grid">
@@ -353,16 +465,16 @@ async function renderDashboard() {
     </section>
     <section class="grid two dashboard-bottom-grid">
       <div class="panel dashboard-list-panel">
-        <h2>오늘 할 일</h2>
+        <div class="section-head"><h2>${icon("check")} 오늘 나의 할 일</h2><a class="text-link" href="/todos" aria-label="할 일 전체 보기">전체 보기 ${icon("arrow")}</a></div>
         ${rows(data.todos, todoSummary)}
       </div>
       <div class="panel dashboard-list-panel">
-        <h2>현재 작업</h2>
+        <div class="section-head"><h2>${icon("timeline")} 나의 진행 작업</h2><a class="text-link" href="/tasks" aria-label="작업 전체 보기">전체 보기 ${icon("arrow")}</a></div>
         ${rows(data.active_tasks, taskSummary)}
       </div>
     </section>
     <section class="panel dashboard-list-panel dashboard-project-panel">
-      <h2>진행 프로젝트</h2>
+      <div class="section-head"><h2>${icon("folder")} 진행 프로젝트</h2><a class="text-link" href="/projects" aria-label="프로젝트 전체 보기">전체 보기 ${icon("arrow")}</a></div>
       ${rows(data.projects, projectSummary)}
     </section>
   `;
@@ -524,10 +636,10 @@ async function renderTasks() {
     <section class="panel task-board-panel">
       <div class="task-board-head">
         <div>
-          <p class="eyebrow">Gantt</p>
+          <p class="eyebrow">PRIVATE · 나만 보는 타임라인</p>
           <div class="task-title-row">
-            <h2>작업바</h2>
-            <button class="secondary task-register-button" type="button" data-task-add-root>작업등록</button>
+            <h2>나의 작업 일정</h2>
+            <button class="task-register-button" type="button" data-task-add-root>${icon("plus")} 작업 추가</button>
           </div>
         </div>
         <span class="badge">${tasks.length}개 작업 · 오늘 ${today}</span>
@@ -754,7 +866,7 @@ function taskDetailDialog(task, tasks, projects) {
                 ? `<button class="secondary" type="button" data-task-detail-edit-cancel>보기</button>`
                 : `<button class="secondary" type="button" data-task-detail-edit="${escapeHtml(task.id)}">수정</button>`
             }
-            <button class="icon-button" type="button" data-task-detail-close aria-label="닫기">X</button>
+            <button class="icon-button" type="button" data-task-detail-close aria-label="닫기">${icon("close")}</button>
           </div>
         </div>
         ${
@@ -852,7 +964,7 @@ function taskCreateDialog(context, tasks, projects, today) {
             <p class="eyebrow">${escapeHtml(targetLabel)}</p>
             <h2 id="task-create-dialog-title">${escapeHtml(title)}</h2>
           </div>
-          <button class="icon-button" type="button" data-task-dialog-close aria-label="닫기">X</button>
+          <button class="icon-button" type="button" data-task-dialog-close aria-label="닫기">${icon("close")}</button>
         </div>
         <form class="form task-create-form task-dialog-form" id="task-dialog-form">
           ${projectField}
@@ -860,7 +972,7 @@ function taskCreateDialog(context, tasks, projects, today) {
           <label class="full">작업명<input name="title" required maxlength="140" placeholder="작업 이름" /></label>
           <label>시작일<input name="start_date" type="date" required value="${escapeHtml(today)}" /></label>
           <label>종료일<input name="end_date" type="date" required value="${escapeHtml(today)}" /></label>
-          <label>담당자<input name="owner" placeholder="담당자명" /></label>
+          <label>담당자<input name="owner" placeholder="담당자명" value="${escapeHtml(currentUser().name)}" /></label>
           <label>상태
             <select name="status">
               <option value="todo">대기</option>
@@ -1335,7 +1447,8 @@ async function renderTodos() {
     <section class="panel">
       <div class="calendar-head">
         <div>
-          <h2>오늘 할 일</h2>
+          <p class="eyebrow">PRIVATE · 나만 보는 할 일</p>
+          <h2>나의 체크리스트 <span class="count-label">${todos.filter((item) => item.completed).length} / ${todos.length}</span></h2>
         </div>
         <div class="todo-controls">
           <input id="todo-date" type="date" value="${selected}" />
@@ -1343,7 +1456,7 @@ async function renderTodos() {
         </div>
       </div>
       <div class="list todo-list" data-todo-list>
-        ${todos.length ? todos.map((item, index) => todoLine(item, index)).join("") : `<p class="empty">등록된 TODO가 없습니다.</p>`}
+        ${todos.length ? todos.map((item, index) => todoLine(item, index)).join("") : emptyState("가벼운 시작, 오늘의 첫 할 일", "아래 입력창에서 새로운 할 일을 추가해 보세요.", "check")}
       </div>
       ${todoQuickForm()}
     </section>
@@ -1494,11 +1607,11 @@ async function renderTodos() {
 
 function todoQuickForm() {
   return `
-    <form class="todo-quick-form" id="todo-form" aria-label="TODO 빠른 등록">
+    <form class="todo-quick-form" id="todo-form" aria-label="할 일 빠른 등록">
       <span class="todo-plus" aria-hidden="true">+</span>
       <div class="todo-quick-fields">
-        <input name="title" required maxlength="140" autocomplete="off" placeholder="새 TODO 제목" />
-        <textarea name="note" placeholder="상세 내용"></textarea>
+        <input name="title" required maxlength="140" autocomplete="off" placeholder="새로운 할 일을 입력하세요" aria-label="할 일 제목" />
+        <textarea name="note" placeholder="상세 내용 (선택)" aria-label="할 일 상세 내용"></textarea>
       </div>
       <button type="submit">추가</button>
     </form>
@@ -1516,8 +1629,8 @@ async function renderProjects() {
   view.innerHTML = `
     <section class="panel">
       <div class="section-head project-head">
-        <h2>프로젝트</h2>
-        <button class="add-button" type="button" data-project-add aria-label="프로젝트 추가">+</button>
+        <h2>전체 프로젝트 <span class="count-label">${items.length}</span></h2>
+        <button class="project-add-button" type="button" data-project-add aria-label="프로젝트 추가">${icon("plus")} 새 프로젝트</button>
       </div>
       ${projectCards(items)}
     </section>
@@ -1548,11 +1661,13 @@ async function renderProjects() {
 
 async function projectWorkspaceDialog(project) {
   const projectId = encodeURIComponent(project.id);
-  const [{ items: meetings }, { items: projectFiles }, { items: projectRecords }] = await Promise.all([
+  const [{ items: meetings }, { items: projectFiles }, { items: projectRecords }, { items: companies }] = await Promise.all([
     api(`/api/meetings?project_id=${projectId}`),
     api(`/api/project-files?project_id=${projectId}`),
     api(`/api/project-records?project_id=${projectId}`),
+    api("/api/companies"),
   ]);
+  meetingCompanies = companies;
   const items = projectItemsForTab(projectDetailTab, { meetings, projectFiles, projectRecords });
   if (projectResourceMode !== "new" && selectedProjectResourceId && !items.some((item) => item.id === selectedProjectResourceId)) {
     selectedProjectResourceId = null;
@@ -1575,7 +1690,7 @@ async function projectWorkspaceDialog(project) {
           <div class="project-detail-actions">
             <button class="secondary" type="button" data-project-info-edit>프로젝트 수정</button>
             <span class="badge">${escapeHtml(projectStatusLabel(project.status))}</span>
-            <button class="icon-button" type="button" data-project-detail-close aria-label="닫기">X</button>
+            <button class="icon-button" type="button" data-project-detail-close aria-label="닫기">${icon("close")}</button>
           </div>
         </div>
         <div class="project-dialog-body">
@@ -1732,6 +1847,7 @@ function setupProjectWorkspaceDialog(project) {
   setupResourceListScroller(document.querySelector(".project-detail-dialog"));
   setupProjectFileUpload(project);
   setupInlineImageEditors(document.querySelector(".project-detail-dialog"));
+  setupMeetingCompanyFields(document.querySelector(".project-detail-dialog"));
   document.querySelector("#project-resource-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (projectDetailTab === "files") {
@@ -1757,11 +1873,12 @@ function setupProjectWorkspaceDialog(project) {
         }
       : {
           project_id: project.id,
+          company_id: form.get("company_id") || "",
           title: form.get("title"),
           date: form.get("date"),
-          start_time: emptyToNull(form.get("start_time")),
+          start_time: String(form.get("start_time") || ""),
           attendees: splitList(form.get("attendees")),
-          agenda: "",
+          agenda: form.get("agenda") || "",
           notes: form.get("notes") || "",
           images,
         };
@@ -1908,7 +2025,7 @@ function projectInfoEditDialog(project) {
             <p class="eyebrow">프로젝트 정보</p>
             <h2 id="project-info-edit-title">프로젝트 수정</h2>
           </div>
-          <button class="icon-button" type="button" data-project-info-cancel aria-label="닫기">X</button>
+          <button class="icon-button" type="button" data-project-info-cancel aria-label="닫기">${icon("close")}</button>
         </div>
         <form class="form project-info-form" id="project-info-form">
           <label>회사명<input name="company_name" maxlength="120" autocomplete="off" value="${escapeHtml(project.company_name || "")}" /></label>
@@ -1988,7 +2105,7 @@ function projectResourceListItem(item) {
       </a>
     `;
   }
-  const meta = projectDetailTab === "records" ? formatDateTime(item.updated_at) : [item.date, item.start_time || "시간 미정"].filter(Boolean).join(" · ");
+  const meta = projectDetailTab === "records" ? formatDateTime(item.updated_at) : [item.company_name || "회사 미지정", item.date, item.start_time || "시간 미정"].filter(Boolean).join(" · ");
   return `
     <button class="resource-list-item ${isSelected ? "active" : ""}" type="button" data-project-resource-id="${escapeHtml(item.id)}">
       <strong>${escapeHtml(item.title)}</strong>
@@ -2033,21 +2150,90 @@ function projectResourceDetail(item) {
   return meetingResourceView(item);
 }
 
-function meetingResourceForm(item = null) {
+function meetingCompanyOptions(selectedId = "") {
+  return meetingCompanies.map((company) => `<option data-company-option value="${escapeHtml(company.id)}" ${company.id === selectedId ? "selected" : ""}>${escapeHtml(company.name)}</option>`).join("");
+}
+
+function meetingCompanyField(selectedId = "") {
+  return `<div class="meeting-company-field full">
+    <div class="meeting-company-select-row"><label>회의 회사<select name="company_id" data-company-select><option value="">회사 미지정</option>${meetingCompanyOptions(selectedId)}</select></label><button class="secondary" type="button" data-company-add>+ 회사 등록</button></div>
+    <div class="meeting-company-create" hidden>
+      <label>등록할 회사명<input data-company-name maxlength="120" autocomplete="off" placeholder="예: 주식회사 한빛" /></label>
+      <div><button type="button" data-company-save>등록 후 선택</button><button class="secondary" type="button" data-company-cancel>취소</button></div>
+    </div>
+    <p class="meeting-company-help">등록된 회사를 선택하면 나중에 회사별로 회의록을 모아볼 수 있습니다.</p>
+    <p class="meeting-company-feedback" role="status" hidden></p>
+  </div>`;
+}
+
+function setupMeetingCompanyFields(root) {
+  root?.querySelectorAll(".meeting-company-field").forEach((field) => {
+    const panel = field.querySelector(".meeting-company-create");
+    const input = field.querySelector("[data-company-name]");
+    const select = field.querySelector("select");
+    const save = field.querySelector("[data-company-save]");
+    const cancel = field.querySelector("[data-company-cancel]");
+    const feedback = field.querySelector(".meeting-company-feedback");
+    field.querySelector("[data-company-add]").addEventListener("click", () => { panel.hidden = false; input.focus(); });
+    cancel.addEventListener("click", () => { panel.hidden = true; input.value = ""; feedback.hidden = true; select.focus(); });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") { event.preventDefault(); event.stopPropagation(); save.click(); }
+      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); if (!cancel.disabled) cancel.click(); }
+    });
+    save.addEventListener("click", async () => {
+      const name = input.value.trim();
+      if (!name) { feedback.textContent = "등록할 회사명을 입력해 주세요."; feedback.hidden = false; input.focus(); return; }
+      const submit = field.closest("form").querySelector("[type='submit']");
+      const wasDisabled = submit.disabled;
+      save.disabled = true;
+      cancel.disabled = true;
+      input.disabled = true;
+      submit.disabled = true;
+      feedback.hidden = true;
+      try {
+        const company = await api("/api/companies", { method: "POST", body: JSON.stringify({ name }) });
+        meetingCompanies = [...meetingCompanies.filter((item) => item.id !== company.id), company].sort((a, b) => a.name.localeCompare(b.name, "ko"));
+        if (!field.isConnected) return;
+        document.querySelectorAll("select[data-company-select]").forEach((control) => {
+          const selected = control.value;
+          control.querySelectorAll("option[data-company-option]").forEach((option) => option.remove());
+          control.insertAdjacentHTML("beforeend", meetingCompanyOptions(selected));
+          control.value = selected;
+        });
+        select.value = company.id;
+        panel.hidden = true;
+        input.value = "";
+        feedback.textContent = `${company.name} 선택됨. 이미 등록된 이름은 기존 회사로 연결됩니다.`;
+        feedback.hidden = false;
+      } catch {
+        if (field.isConnected) { feedback.textContent = "회사를 등록하지 못했습니다. 회사명과 연결 상태를 확인한 뒤 다시 시도해 주세요."; feedback.hidden = false; }
+      } finally {
+        save.disabled = false;
+        cancel.disabled = false;
+        input.disabled = false;
+        submit.disabled = wasDisabled;
+      }
+    });
+  });
+}
+
+function meetingResourceForm(item = null, { standalone = false, defaultCompanyId = "" } = {}) {
   const title = item?.title || "";
-  const attendees = Array.isArray(item?.attendees) ? item.attendees.join(", ") : "";
+  const attendees = Array.isArray(item?.attendees) ? item.attendees.join(", ") : currentUser().name;
   const images = resourceImages(item);
   const submitLabel = item ? "회의록 수정" : "회의록 저장";
   return `
-    <form class="form resource-form" id="project-resource-form">
+    <form class="form resource-form" id="${standalone ? "meeting-form" : "project-resource-form"}">
       <input name="existing_images" type="hidden" value="${escapeHtml(JSON.stringify(images))}" />
       <label class="full">회의명<input name="title" required maxlength="140" value="${escapeHtml(title)}" placeholder="예: 킥오프 회의" /></label>
+      ${meetingCompanyField(item?.company_id || (item ? "" : defaultCompanyId))}
       <label>일자<input name="date" type="date" required value="${escapeHtml(item?.date || toDateInputValue(new Date()))}" /></label>
       <label>시작 시간<input name="start_time" type="time" value="${escapeHtml(item?.start_time || "")}" /></label>
       <label class="full">참석자<input name="attendees" value="${escapeHtml(attendees)}" placeholder="쉼표 또는 줄바꿈으로 구분" /></label>
+      <label class="full">안건<textarea name="agenda">${escapeHtml(meetingSection(item, "안건"))}</textarea></label>
       ${richTextEditor("notes", "회의 내용", meetingContentWithImages(item))}
       <div class="resource-form-actions full">
-        ${item ? `<button class="secondary" type="button" data-project-resource-cancel>취소</button>` : ""}
+        ${item || standalone ? `<button class="secondary" type="button" ${standalone ? "data-document-cancel" : "data-project-resource-cancel"}>취소</button>` : ""}
         <button type="submit">${submitLabel}</button>
       </div>
     </form>
@@ -2112,40 +2298,42 @@ function projectRecordFeedItem(item) {
   `;
 }
 
-function wikiResourceForm(item = null) {
+function wikiResourceForm(item = null, { standalone = false } = {}) {
   const tags = Array.isArray(item?.tags) ? item.tags.join(", ") : "";
   const images = resourceImages(item);
-  const submitLabel = item ? "Wiki 수정" : "Wiki 저장";
+  const submitLabel = item ? "위키 수정" : "위키 저장";
   return `
-    <form class="form resource-form" id="project-resource-form">
+    <form class="form resource-form" id="${standalone ? "wiki-form" : "project-resource-form"}">
       <input name="existing_images" type="hidden" value="${escapeHtml(JSON.stringify(images))}" />
       <label class="full">문서 제목<input name="title" required maxlength="140" value="${escapeHtml(item?.title || "")}" placeholder="예: 고객사 운영 규칙" /></label>
       <label>카테고리<input name="category" required maxlength="60" value="${escapeHtml(item?.category || "General")}" /></label>
       <label>태그<input name="tags" value="${escapeHtml(tags)}" placeholder="쉼표 또는 줄바꿈으로 구분" /></label>
       ${richTextEditor("content", "본문", noteContentWithImages(item))}
       <div class="resource-form-actions full">
-        ${item ? `<button class="secondary" type="button" data-project-resource-cancel>취소</button>` : ""}
+        ${item || standalone ? `<button class="secondary" type="button" ${standalone ? "data-document-cancel" : "data-project-resource-cancel"}>취소</button>` : ""}
         <button type="submit">${submitLabel}</button>
       </div>
     </form>
   `;
 }
 
-function meetingResourceView(item) {
+function meetingResourceView(item, { standalone = false } = {}) {
   const attendees = Array.isArray(item.attendees) && item.attendees.length ? item.attendees.join(", ") : "없음";
   return `
     <article class="resource-reader">
       <div class="resource-reader-actions">
-        <button class="secondary" type="button" data-project-resource-edit>수정</button>
-        <button class="danger-button" type="button" data-project-resource-delete>삭제</button>
+        <button class="${standalone ? "" : "secondary"}" type="button" ${standalone ? "data-document-edit" : "data-project-resource-edit"}>수정</button>
+        ${standalone ? "" : `<button class="danger-button" type="button" data-project-resource-delete>삭제</button>`}
       </div>
       <p class="eyebrow">회의록</p>
       <h3>${escapeHtml(item.title)}</h3>
       <dl class="resource-meta">
+        <dt>회사</dt><dd>${escapeHtml(item.company_name || "회사 미지정")}</dd>
         <dt>일자</dt><dd>${escapeHtml(item.date || "-")}</dd>
         <dt>시간</dt><dd>${escapeHtml(item.start_time || "시간 미정")}</dd>
         <dt>참석자</dt><dd>${escapeHtml(attendees)}</dd>
       </dl>
+      ${meetingSection(item, "안건") ? resourceBlock("안건", meetingSection(item, "안건")) : ""}
       ${resourceBlock("회의 내용", meetingContentWithImages(item))}
     </article>
   `;
@@ -2169,13 +2357,13 @@ function projectRecordView(item) {
   `;
 }
 
-function wikiResourceView(item) {
+function wikiResourceView(item, { standalone = false } = {}) {
   const tags = Array.isArray(item.tags) && item.tags.length ? item.tags.join(", ") : "없음";
   return `
     <article class="resource-reader">
       <div class="resource-reader-actions">
-        <button class="secondary" type="button" data-project-resource-edit>수정</button>
-        <button class="danger-button" type="button" data-project-resource-delete>삭제</button>
+        <button class="${standalone ? "" : "secondary"}" type="button" ${standalone ? "data-document-edit" : "data-project-resource-edit"}>수정</button>
+        ${standalone ? "" : `<button class="danger-button" type="button" data-project-resource-delete>삭제</button>`}
       </div>
       <p class="eyebrow">Wiki</p>
       <h3>${escapeHtml(item.title)}</h3>
@@ -2239,9 +2427,12 @@ function meetingSection(item, heading) {
   if (!item?.body) {
     return "";
   }
-  const content = splitEventBody(item.body).content;
-  const match = content.match(new RegExp(`(?:^|\\n)## ${escapeRegExp(heading)}\\s*([\\s\\S]*?)(?=\\n## |$)`));
-  return match ? match[1].trim().replace(/^- /gm, "") : "";
+  const lines = splitEventBody(item.body).content.split(/\r?\n/);
+  const start = lines.findIndex((line) => line.trim() === `## ${heading}`);
+  if (start === -1) return "";
+  const nextHeading = { "참석자": "안건", "안건": "회의 내용" }[heading];
+  const end = nextHeading ? lines.findIndex((line, index) => index > start && line.trim() === `## ${nextHeading}`) : -1;
+  return lines.slice(start + 1, end === -1 ? undefined : end).join("\n").trim();
 }
 
 function notePlainContent(item) {
@@ -2301,7 +2492,7 @@ function richTextEditor(name, label, value = "") {
         <label for="${escapeHtml(fieldId)}">${escapeHtml(label)}</label>
         <button class="secondary inline-image-button" type="button" data-inline-image-button="${escapeHtml(name)}">이미지 삽입</button>
       </div>
-      <div id="${escapeHtml(fieldId)}" class="rich-editor-surface" contenteditable="true" role="textbox" aria-multiline="true" data-rich-editor="${escapeHtml(name)}">${richEditorHtml(value)}</div>
+      <div id="${escapeHtml(fieldId)}" class="rich-editor-surface" contenteditable="true" role="textbox" aria-label="${escapeHtml(label)}" aria-multiline="true" data-rich-editor="${escapeHtml(name)}">${richEditorHtml(value)}</div>
       <textarea name="${escapeHtml(name)}" class="rich-editor-source" data-rich-source hidden>${escapeHtml(value)}</textarea>
       <input class="inline-image-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple data-inline-image-input="${escapeHtml(name)}" />
     </div>
@@ -2836,7 +3027,7 @@ function fileToDataUrl(file) {
 
 function projectCards(items) {
   if (!items.length) {
-    return `<p class="empty">등록된 프로젝트가 없습니다.</p>`;
+    return emptyState("새로운 프로젝트를 시작해 보세요", "프로젝트별로 회의록, 파일, 업무 기록을 모아둘 수 있어요.", "folder");
   }
   return `
     <div class="project-card-grid">
@@ -2850,9 +3041,10 @@ function projectCard(item) {
   const status = projectStatusLabel(item.status);
   return `
     <button class="project-card" type="button" data-project-open="${escapeHtml(item.id)}">
-      <span>${escapeHtml(company)}</span>
+      <span class="project-card-top"><span class="project-folder-icon">${icon("folder")}</span><small class="project-status" data-status="${escapeHtml(item.status || "planning")}">${escapeHtml(status)}</small></span>
+      <span class="project-company">${escapeHtml(company)}</span>
       <strong>${escapeHtml(item.name)}</strong>
-      <small>${escapeHtml(status)}</small>
+      <span class="project-card-bottom">프로젝트 살펴보기 ${icon("arrow")}</span>
     </button>
   `;
 }
@@ -2866,7 +3058,7 @@ function projectCreateDialog() {
             <p class="eyebrow">프로젝트 생성</p>
             <h2 id="project-create-title">새 프로젝트</h2>
           </div>
-          <button class="icon-button" type="button" data-project-create-cancel aria-label="닫기">X</button>
+          <button class="icon-button" type="button" data-project-create-cancel aria-label="닫기">${icon("close")}</button>
         </div>
         <div class="project-dialog-body">
           <form class="form" id="project-create-form">
@@ -2901,6 +3093,7 @@ function setupProjectCreateDialog() {
       body: JSON.stringify({
         company_name: form.get("company_name"),
         name: form.get("name"),
+        owner: currentUser().name,
         status: "active",
         summary: "",
         goals: [],
@@ -2919,98 +3112,187 @@ function setupProjectCreateDialog() {
 }
 
 async function renderMeetings() {
-  const { items } = await api("/api/meetings");
-  const today = toDateInputValue(new Date());
-  view.innerHTML = `
-    <section class="grid two">
-      <div class="panel">
-        <div class="section-head">
-          <h2>최근 회의록</h2>
-          <span class="badge">${items.length}건</span>
-        </div>
-        ${rows(items, meetingSummary)}
-      </div>
-      <div class="panel">
-        <h2>회의록 작성</h2>
-        <form class="form" id="meeting-form">
-          <label class="full">회의명<input name="title" required maxlength="140" placeholder="예: 주간 운영 회의" /></label>
-          <label>일자<input name="date" type="date" required value="${today}" /></label>
-          <label>시작 시간<input name="start_time" type="time" /></label>
-          <label class="full">참석자<input name="attendees" placeholder="쉼표 또는 줄바꿈으로 구분" /></label>
-          <label class="full">안건<textarea name="agenda"></textarea></label>
-          ${richTextEditor("notes", "회의 내용")}
-          <button class="full" type="submit">회의록 저장</button>
-        </form>
-      </div>
-    </section>
-  `;
-  setupInlineImageEditors(document.querySelector("#meeting-form"));
-  document.querySelector("#meeting-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const formEl = event.currentTarget;
-    syncRichTextEditors(formEl);
-    const form = new FormData(formEl);
-    const notes = form.get("notes") || "";
-    const images = imagesReferencedInContent(uploadedInlineImages(formEl), notes);
-    await api("/api/meetings", {
-      method: "POST",
-      body: JSON.stringify({
-        title: form.get("title"),
-        date: form.get("date"),
-        start_time: emptyToNull(form.get("start_time")),
-        attendees: splitList(form.get("attendees")),
-        agenda: form.get("agenda") || "",
-        notes,
-        images,
-      }),
-    });
-    renderMeetings();
-  });
+  return renderDocumentPage("meetings");
 }
 
 async function renderWiki() {
-  const { items } = await api("/api/wiki");
-  view.innerHTML = `
-    <section class="grid two">
-      <div class="panel">
-        <div class="section-head">
-          <h2>Wiki 문서</h2>
-          <span class="badge">${items.length}건</span>
-        </div>
-        ${rows(items, wikiSummary)}
-      </div>
-      <div class="panel">
-        <h2>Wiki 작성</h2>
-        <form class="form" id="wiki-form">
-          <label class="full">문서 제목<input name="title" required maxlength="140" placeholder="예: 배포 절차" /></label>
-          <label>카테고리<input name="category" required maxlength="60" value="General" /></label>
-          <label>태그<input name="tags" placeholder="쉼표 또는 줄바꿈으로 구분" /></label>
-          ${richTextEditor("content", "본문")}
-          <button class="full" type="submit">Wiki 저장</button>
-        </form>
-      </div>
-    </section>
-  `;
-  setupInlineImageEditors(document.querySelector("#wiki-form"));
-  document.querySelector("#wiki-form").addEventListener("submit", async (event) => {
+  return renderDocumentPage("wiki");
+}
+
+async function renderDocumentPage(kind) {
+  const sequence = ++documentRenderSequence;
+  const isMeeting = kind === "meetings";
+  const label = isMeeting ? "회의록" : "위키";
+  const path = isMeeting ? "/api/meetings" : "/api/wiki";
+  const [result, companyResult] = await Promise.all([api(path), isMeeting ? api("/api/companies") : Promise.resolve(null)]);
+  if (isMeeting) meetingCompanies = companyResult.items;
+  let items = result.items;
+  let companyFilter = isMeeting ? (new URLSearchParams(location.search).get("company_id") ?? "__all__") : "__all__";
+  if (companyFilter !== "__all__" && companyFilter !== "" && !meetingCompanies.some((company) => company.id === companyFilter)) companyFilter = "__all__";
+  const filteredItems = () => isMeeting && companyFilter !== "__all__" ? items.filter((item) => (item.company_id || "") === companyFilter) : items;
+  let selectedId = filteredItems()[0]?.id || null;
+  let mode = selectedId ? "view" : "new";
+  let saving = false;
+  let status = "";
+  const active = () => sequence === documentRenderSequence && currentRoute() === kind;
+
+  function updateFilterUrl() {
+    if (!isMeeting || !active()) return;
+    const url = new URL(location.href);
+    if (companyFilter === "__all__") url.searchParams.delete("company_id");
+    else url.searchParams.set("company_id", companyFilter);
+    history.replaceState({}, "", `${url.pathname}${url.search}`);
+  }
+
+  function documentListHtml() {
+    const visible = filteredItems();
+    if (!visible.length) return `<p class="empty">${isMeeting && companyFilter !== "__all__" ? "선택한 회사의 회의록이 없습니다." : `아직 등록된 ${label}${isMeeting ? "이" : "가"} 없습니다.`}</p>`;
+    return visible.map((item) => {
+      const meta = isMeeting ? [item.company_name || "회사 미지정", item.date, item.start_time || "시간 미정"] : [item.category || "General", String(item.updated_at || "").slice(0, 10)];
+      const current = item.id === selectedId && mode !== "new";
+      return `<div class="document-entry ${current ? "is-selected" : ""}"><button class="document-open" type="button" data-document-open="${escapeHtml(item.id)}" aria-pressed="${current}"><span class="document-type-icon">${icon(isMeeting ? "notes" : "book")}</span><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(meta.filter(Boolean).join(" · "))}</small></span></button><button class="secondary document-row-edit" type="button" data-document-row-edit="${escapeHtml(item.id)}" aria-label="${escapeHtml(item.title)} 수정">수정</button></div>`;
+    }).join("");
+  }
+
+  function bindDocumentList() {
+    view.querySelectorAll("[data-document-open]").forEach((button) => button.addEventListener("click", () => selectDocument(button.dataset.documentOpen, "view")));
+    view.querySelectorAll("[data-document-row-edit]").forEach((button) => button.addEventListener("click", () => selectDocument(button.dataset.documentRowEdit, "edit")));
+  }
+
+  function focusDetail() {
+    const panel = view.querySelector(".document-detail-panel");
+    if (window.matchMedia("(max-width: 980px)").matches) panel?.scrollIntoView({ block: "start" });
+    (panel?.querySelector("input[name='title']") || panel)?.focus({ preventScroll: true });
+  }
+
+  function selectDocument(id, nextMode) {
+    if (saving) return;
+    if (nextMode === "view" && !filteredItems().some((item) => item.id === id)) id = filteredItems()[0]?.id || null;
+    selectedId = id;
+    mode = nextMode === "view" && !id ? "new" : nextMode;
+    status = "";
+    draw();
+    focusDetail();
+  }
+
+  function draw() {
+    if (!active()) return;
+    const selected = items.find((item) => item.id === selectedId);
+    const editing = mode === "edit" && selected;
+    const formHtml = isMeeting ? meetingResourceForm(editing ? selected : null, { standalone: true, defaultCompanyId: companyFilter === "__all__" ? "" : companyFilter }) : wikiResourceForm(editing ? selected : null, { standalone: true });
+    const detail = mode === "view" && selected
+      ? (isMeeting ? meetingResourceView(selected, { standalone: true }) : wikiResourceView(selected, { standalone: true }))
+      : `<div class="section-head"><h2>${label} ${editing ? "수정" : "작성"}</h2><span class="badge">${editing ? "편집 중" : "새 문서"}</span></div><p class="document-form-hint">${editing ? "내용을 변경한 뒤 하단의 수정 버튼을 눌러 저장하세요." : "팀과 나눌 내용을 기록해 보세요."}</p>${formHtml}`;
+    view.innerHTML = `
+      <section class="document-workspace">
+        <aside class="panel document-list-panel">
+          <div class="section-head"><h2>${isMeeting ? "회의록 목록" : "위키 문서"} <span class="count-label" data-document-count>${filteredItems().length}</span></h2><button type="button" class="document-new-button" data-document-new>${icon("plus")} 새 ${label}</button></div>
+          ${isMeeting ? `<label class="meeting-company-filter">회사별 보기<select data-company-filter data-company-select><option value="__all__" ${companyFilter === "__all__" ? "selected" : ""}>전체 회사</option><option value="" ${companyFilter === "" ? "selected" : ""}>회사 미지정</option>${meetingCompanyOptions(companyFilter)}</select></label>` : ""}
+          <p class="document-list-hint">문서를 선택해 읽거나 바로 수정하세요.</p>
+          <div class="document-list">${documentListHtml()}</div>
+        </aside>
+        <section class="panel document-detail-panel" tabindex="-1" aria-label="${label} 내용">
+          ${status ? `<p class="document-success" role="status">${icon("check")}${escapeHtml(status)}</p>` : ""}
+          <p class="document-feedback" role="alert" hidden></p>
+          ${detail}
+        </section>
+      </section>`;
+    bindDocumentList();
+    view.querySelector("[data-company-filter]")?.addEventListener("change", (event) => {
+      if (saving) return;
+      companyFilter = event.currentTarget.value;
+      updateFilterUrl();
+      if (mode === "view") {
+        selectedId = filteredItems()[0]?.id || null;
+        mode = selectedId ? "view" : "new";
+        draw();
+      } else {
+        // Filter the list without replacing an in-progress editor or uploaded images.
+        view.querySelector(".document-list").innerHTML = documentListHtml();
+        view.querySelector("[data-document-count]").textContent = filteredItems().length;
+        bindDocumentList();
+      }
+    });
+    view.querySelector("[data-document-edit]")?.addEventListener("click", () => selectDocument(selectedId, "edit"));
+    view.querySelector("[data-document-new]").addEventListener("click", () => selectDocument(selectedId, "new"));
+    view.querySelector("[data-document-cancel]")?.addEventListener("click", () => selectDocument(selectedId, selectedId ? "view" : "new"));
+    const formEl = view.querySelector(".resource-form");
+    if (formEl) {
+      setupInlineImageEditors(formEl);
+      if (isMeeting) setupMeetingCompanyFields(formEl);
+      formEl.elements.title.addEventListener("input", () => formEl.elements.title.setCustomValidity(""));
+      formEl.addEventListener("submit", saveDocument);
+    }
+  }
+
+  async function saveDocument(event) {
     event.preventDefault();
+    if (saving || !active()) return;
     const formEl = event.currentTarget;
+    const feedback = view.querySelector(".document-feedback");
+    if (formEl.querySelector("[data-inline-image-button]:disabled")) {
+      feedback.textContent = "이미지 업로드가 끝난 뒤 저장해 주세요.";
+      feedback.hidden = false;
+      return;
+    }
     syncRichTextEditors(formEl);
     const form = new FormData(formEl);
-    const content = form.get("content") || "";
-    const images = imagesReferencedInContent(uploadedInlineImages(formEl), content);
-    await api("/api/wiki", {
-      method: "POST",
-      body: JSON.stringify({
-        title: form.get("title"),
-        category: form.get("category") || "General",
-        tags: splitList(form.get("tags")),
-        content,
-        images,
-      }),
-    });
-    renderWiki();
-  });
+    const title = String(form.get("title") || "").trim();
+    if (!title) {
+      formEl.elements.title.setCustomValidity("제목을 입력해 주세요.");
+      formEl.elements.title.reportValidity();
+      return;
+    }
+    const body = String(form.get(isMeeting ? "notes" : "content") || "");
+    const agenda = String(form.get("agenda") || "");
+    const images = imagesReferencedInContent(uniqueImages([...existingFormImages(form), ...uploadedInlineImages(formEl)]), `${agenda}\n${body}`);
+    const payload = isMeeting
+      ? { title, company_id: form.get("company_id") || "", date: form.get("date"), start_time: String(form.get("start_time") || ""), attendees: splitList(form.get("attendees")), agenda, notes: body, images }
+      : { title, category: String(form.get("category") || "").trim() || "General", tags: splitList(form.get("tags")), content: body, images };
+    const editing = mode === "edit" && selectedId;
+    const url = editing ? `${path}/${encodeURIComponent(selectedId)}` : path;
+    const submit = formEl.querySelector("[type='submit']");
+    const previousLabel = submit.textContent;
+    const controls = [...view.querySelectorAll(".document-workspace button, .document-workspace input, .document-workspace select, .document-workspace textarea")].map((element) => [element, element.disabled]);
+    const editors = [...formEl.querySelectorAll("[data-rich-editor]")];
+    saving = true;
+    controls.forEach(([element]) => { element.disabled = true; });
+    editors.forEach((element) => { element.contentEditable = "false"; });
+    submit.textContent = "저장 중…";
+    feedback.hidden = true;
+    try {
+      const saved = await api(url, { method: editing ? "PATCH" : "POST", body: JSON.stringify(payload) });
+      if (!active()) return;
+      items = editing ? items.map((item) => item.id === saved.id ? saved : item) : [saved, ...items];
+      if (isMeeting && companyFilter !== "__all__" && companyFilter !== (saved.company_id || "")) {
+        companyFilter = saved.company_id || "";
+        updateFilterUrl();
+      }
+      selectedId = saved.id;
+      mode = "view";
+      status = `${label}${isMeeting ? "을" : "를"} ${editing ? "수정" : "저장"}했습니다.`;
+      draw();
+    } catch (error) {
+      if (!active() || !formEl.isConnected) return;
+      let reason = error.message;
+      try {
+        const detail = JSON.parse(reason).detail;
+        if (typeof detail === "string") reason = detail;
+        else if (Array.isArray(detail)) reason = detail.map((item) => item.msg).join(" ");
+      } catch { /* Network failures already provide a text message. */ }
+      feedback.textContent = `저장하지 못했습니다. 작성 내용은 유지됩니다. ${reason}`;
+      feedback.hidden = false;
+    } finally {
+      saving = false;
+      if (formEl.isConnected) {
+        controls.forEach(([element, disabled]) => { element.disabled = disabled; });
+        editors.forEach((element) => { element.contentEditable = "true"; });
+        submit.textContent = previousLabel;
+      }
+    }
+  }
+
+  draw();
 }
 
 function dashboardDayPanel(label, day, absenceEventCount) {
@@ -3019,18 +3301,18 @@ function dashboardDayPanel(label, day, absenceEventCount) {
     <section class="panel dashboard-day-panel">
       <div class="section-head">
         <div>
-          <p class="eyebrow">${escapeHtml(label)}</p>
+          <p class="eyebrow day-label ${label === "오늘" ? "is-today" : ""}">${escapeHtml(label)}<span>${label === "오늘" ? "TODAY" : "TOMORROW"}</span></p>
           <h2>${escapeHtml(dateText || label)}</h2>
         </div>
         <span class="badge">부재 ${absenceEventCount || 0}건 · 회의 ${(day?.meetings || []).length}건</span>
       </div>
       <div class="dashboard-day-content">
         <section class="dashboard-focus-block">
-          <h3>휴가/부재</h3>
+          <h3>${icon("coffee")} 휴가 · 부재</h3>
           ${absenceOverview(day?.absences || [], `${label} 등록된 휴가/부재 일정이 없습니다.`)}
         </section>
         <section class="dashboard-focus-block">
-          <h3>회의</h3>
+          <h3>${icon("people")} 회의</h3>
           ${dashboardMeetingList(day?.meetings || [], `${label} 등록된 회의가 없습니다.`)}
         </section>
       </div>
@@ -3057,12 +3339,20 @@ function dashboardMeetingList(items, emptyText) {
 function dashboardMeetingSummary(item) {
   const attendees = Array.isArray(item.attendees) ? item.attendees.join(", ") : "";
   const time = item.start_time || "시간 미정";
-  const meta = [time, attendees || "참석자 미정"].filter(Boolean).join(" · ");
+  const meta = [item.company_name || "회사 미지정", time, attendees || "참석자 미정"].filter(Boolean).join(" · ");
   return `<div class="row-main"><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(meta)}</span></div><span class="badge">회의록</span>`;
 }
 
-function stat(label, value) {
-  return `<div class="stat"><span>${escapeHtml(label)}</span><strong>${escapeHtml(String(value))}</strong></div>`;
+function icon(name) {
+  return `<svg class="icon" aria-hidden="true"><use href="/static/icons.svg#${name}" /></svg>`;
+}
+
+function emptyState(title, description = "", iconName = "notes") {
+  return `<div class="empty empty-state"><span class="empty-icon">${icon(iconName)}</span><strong>${escapeHtml(title)}</strong>${description ? `<span>${escapeHtml(description)}</span>` : ""}</div>`;
+}
+
+function stat(label, value, iconName, detail, tone, unit) {
+  return `<div class="stat stat-${tone}"><div class="stat-head"><span>${escapeHtml(label)}</span><span class="stat-icon">${icon(iconName)}</span></div><div class="stat-value"><strong>${escapeHtml(String(value))}</strong><span>${escapeHtml(unit)}</span></div><p class="stat-detail">${escapeHtml(detail)}</p></div>`;
 }
 
 function rows(items, summary) {
@@ -3116,12 +3406,12 @@ function taskSummary(item) {
 
 function projectSummary(item) {
   const meta = [item.company_name || "회사명 미지정", item.owner || "", projectStatusLabel(item.status)].filter(Boolean).join(" · ");
-  return `<div class="row-main"><strong>${escapeHtml(item.name)}</strong><span>${escapeHtml(meta)}</span></div><span class="badge">${escapeHtml(item.path || "vault")}</span>`;
+  return `<div class="row-main"><strong>${escapeHtml(item.name)}</strong><span>${escapeHtml(meta)}</span></div><span class="badge">${escapeHtml(projectStatusLabel(item.status))}</span>`;
 }
 
 function meetingSummary(item) {
   const attendees = Array.isArray(item.attendees) ? item.attendees.join(", ") : "";
-  const meta = [item.date, item.start_time, attendees || "참석자 미정"].filter(Boolean).join(" · ");
+  const meta = [item.company_name || "회사 미지정", item.date, item.start_time, attendees || "참석자 미정"].filter(Boolean).join(" · ");
   return `<div class="row-main"><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(meta)}</span></div><span class="badge">${escapeHtml(item.path || "회의록")}</span>`;
 }
 
@@ -3211,7 +3501,7 @@ function todoReportDialogHtml(report) {
             <p class="eyebrow">${escapeHtml([range, report.basis].filter(Boolean).join(" · "))}</p>
             <h2 id="todo-report-title">${escapeHtml(title)}</h2>
           </div>
-          <button class="icon-button" type="button" data-todo-report-close aria-label="닫기">X</button>
+          <button class="icon-button" type="button" data-todo-report-close aria-label="닫기">${icon("close")}</button>
         </div>
         <article class="todo-report">
           <div class="todo-report-meta">
@@ -3375,13 +3665,13 @@ function taskGantt(tasks, projects) {
   const rows = taskGanttRows(groups, range);
   const todayIndex = dateDiffDays(range.start, new Date(`${toDateInputValue(new Date())}T00:00:00`));
   if (!tasks.length) {
-    return `<div class="task-gantt-empty"><p class="empty">등록된 작업이 없습니다. 아래에서 첫 작업을 등록하세요.</p></div>`;
+    return `<div class="task-gantt-empty">${emptyState("프로젝트의 첫 작업을 계획해 보세요", "상단의 작업 추가 버튼으로 일정과 담당자를 지정할 수 있어요.", "timeline")}</div>`;
   }
   const rowTemplate = `40px 40px repeat(${rows.length}, 56px)`;
   return `
-    <div class="task-gantt" style="--task-day-count:${days.length}; --task-day-width:${TASK_GANTT_DAY_WIDTH}px; --task-left-width:${TASK_GANTT_LEFT_WIDTH}px;">
+    <div class="task-gantt" style="--task-day-count:${days.length}; --task-day-width:${TASK_GANTT_DAY_WIDTH}px;">
       <div class="task-gantt-scroll" data-task-today-index="${todayIndex}" data-task-range-start="${toDateInputValue(range.start)}" data-task-day-count="${days.length}">
-        <div class="task-gantt-grid" style="min-width:${TASK_GANTT_LEFT_WIDTH + days.length * TASK_GANTT_DAY_WIDTH}px; grid-template-columns: var(--task-left-width) repeat(${days.length}, var(--task-day-width)); grid-template-rows:${rowTemplate};">
+        <div class="task-gantt-grid" style="min-width:calc(var(--task-left-width) + var(--task-day-count) * var(--task-day-width)); grid-template-columns: var(--task-left-width) repeat(${days.length}, var(--task-day-width)); grid-template-rows:${rowTemplate};">
           <div class="task-left-header" style="grid-row:1 / 3;">업무</div>
           <div class="task-month-header" style="grid-column:2 / -1;">${taskMonthHeader(days)}</div>
           <div class="task-day-header" style="grid-column:2 / -1;">${taskDayHeader(days)}</div>
@@ -3882,7 +4172,7 @@ function calendarEventDialog(dateValue, events) {
             <p class="eyebrow">일정 등록</p>
             <h2 id="calendar-dialog-title">${formatDateLabel(dateValue)}</h2>
           </div>
-          <button class="icon-button" type="button" data-close-calendar-dialog aria-label="닫기">X</button>
+          <button class="icon-button" type="button" data-close-calendar-dialog aria-label="닫기">${icon("close")}</button>
         </div>
         <div class="modal-body">
           <section class="modal-existing">
@@ -3921,7 +4211,7 @@ function calendarDeleteConfirmDialog(item) {
 function calendarEventForm(dateValue, item = null) {
   const startDate = item ? eventStartDate(item) : dateValue;
   const endDate = item ? eventEndDate(item) : dateValue;
-  const attendees = Array.isArray(item?.attendees) ? item.attendees.join(", ") : "";
+  const attendees = Array.isArray(item?.attendees) ? item.attendees.join(", ") : currentUser().name;
   const notes = item ? eventNotes(item) : "";
   return `
     <form class="form event-form" id="event-form">
@@ -3933,6 +4223,9 @@ function calendarEventForm(dateValue, item = null) {
           <option value="출장"></option>
           <option value="연차"></option>
           <option value="반차"></option>
+          <option value="오전 반차"></option>
+          <option value="오후 반차"></option>
+          <option value="재택"></option>
           <option value="미팅"></option>
           <option value="회사 일정"></option>
         </datalist>
@@ -4166,6 +4459,7 @@ function categoryLabel(value) {
   return {
     annual_leave: "연차",
     half_day: "반차",
+    remote_work: "재택",
     meeting: "미팅",
     company: "회사 일정",
     other: "기타",
@@ -4179,6 +4473,11 @@ function categoryClass(value) {
     연차: "annual-leave",
     half_day: "half-day",
     반차: "half-day",
+    "오전 반차": "half-day",
+    "오후 반차": "half-day",
+    remote_work: "remote-work",
+    재택: "remote-work",
+    재택근무: "remote-work",
     meeting: "meeting",
     미팅: "meeting",
     company: "company",

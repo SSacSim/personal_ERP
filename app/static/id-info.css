@@ -1,0 +1,55 @@
+.id-info-page { min-width: 0; }
+.id-info-page [hidden] { display: none !important; }
+.id-info-gate { display: grid; place-items: center; min-height: min(65vh, 640px); padding: 24px 0; }
+.id-info-lock { width: min(100%, 400px); display: grid; gap: 14px; padding: 32px; }
+.id-info-lock-icon { display: grid; place-items: center; width: 48px; height: 48px; border-radius: 14px; background: var(--accent-soft); color: var(--accent); }
+.id-info-lock h2 { margin: 4px 0 0; font-size: 24px; }
+.id-info-lock p { margin: 0; font-size: 13px; line-height: 1.7; color: var(--muted); }
+.id-info-lock label { margin-top: 8px; font-size: 13px; font-weight: 600; }
+.id-info-lock input { width: 100%; padding: 12px; border: 1px solid var(--line); border-radius: 8px; font-size: 16px; background: var(--panel); color: var(--text); }
+.id-info-lock button { min-height: 44px; font-size: 14px; }
+.id-info-lock .id-info-lock-error { color: var(--danger); }
+.id-info-lock-hint { color: var(--muted); font-size: 11px; text-align: center; }
+.id-info-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin: 12px 0 24px; }
+.id-info-heading h2 { margin: 0; font-size: 20px; }
+.id-info-heading p { margin: 7px 0 0; color: var(--muted); font-size: 12px; }
+.id-info-actions, .id-info-row-actions, .id-info-form-actions { display: flex; gap: 8px; }
+.id-info-actions { flex-shrink: 0; flex-wrap: wrap; }
+.id-info-page button { white-space: nowrap; font-size: 12px; }
+.id-info-notice { padding: 12px 16px; border-radius: 9px; background: var(--accent-soft); color: var(--accent); }
+.id-info-notice.error { background: #fff0ee; color: var(--danger); }
+.id-info-form { margin-bottom: 20px; }
+.id-info-form h3 { margin: 0 0 18px; font-size: 16px; }
+.id-info-form fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+.id-info-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.id-info-fields label { display: block; min-width: 0; color: var(--text); font-size: 12px; font-weight: 600; }
+.id-info-fields input, .id-info-fields textarea { display: block; width: 100%; min-width: 0; margin-top: 7px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); font-size: 14px; font-weight: 400; }
+.id-info-fields textarea { resize: vertical; }
+.id-info-required { color: var(--muted); font-size: 10px; font-weight: 400; }
+.id-info-notes-field { grid-column: 1 / -1; }
+.id-info-password-input { display: flex; align-items: center; gap: 6px; margin-top: 7px; }
+.id-info-password-input input { margin-top: 0; }
+.id-info-password-input button { flex-shrink: 0; }
+.id-info-form-actions { justify-content: flex-end; margin-top: 16px; }
+.id-info-table-wrap { overflow-x: auto; padding: 0; }
+.id-info-table { width: 100%; min-width: 1080px; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
+.id-info-table th { text-align: left; background: var(--surface-subtle); color: var(--muted); font-weight: 500; }
+.id-info-table th, .id-info-table td { padding: 16px; border-bottom: 1px solid var(--line); vertical-align: top; overflow-wrap: anywhere; }
+.id-info-table th:nth-child(1) { width: 13%; }
+.id-info-table th:nth-child(2) { width: 16%; }
+.id-info-table th:nth-child(3) { width: 18%; }
+.id-info-table th:nth-child(5), .id-info-table th:nth-child(6) { width: 132px; }
+.id-info-table th:nth-child(7) { width: 116px; }
+.id-info-table tbody tr:last-child td { border-bottom: 0; }
+.id-info-category { font-weight: 600; }
+.id-info-login, .id-info-notes { white-space: pre-wrap; }
+.id-info-timestamp { font-size: 12px; font-variant-numeric: tabular-nums; }
+.id-info-timestamp time { display: grid; gap: 4px; white-space: nowrap; }
+.id-info-time { color: var(--muted); font-size: 11px; }
+.id-info-password { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; }
+.id-info-password code { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.id-info-password button, .id-info-row-actions button { padding: 5px 8px; font-size: 11px; }
+.id-info-table .id-info-empty { padding: 40px 20px; color: var(--muted); text-align: center; }
+.id-info-caption { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+@media (max-width: 980px) { .id-info-fields { grid-template-columns: 1fr; } }
+@media (max-width: 760px) { .id-info-heading { flex-direction: column; align-items: flex-start; } .id-info-fields input, .id-info-fields textarea { font-size: 16px; } }

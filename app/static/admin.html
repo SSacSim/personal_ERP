@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>관리자 · ERP</title>
+    <link rel="stylesheet" href="/static/auth.css" />
+    <script src="/static/admin.js" type="module"></script>
+  </head>
+  <body>
+    <main class="admin-shell">
+      <header class="admin-header"><a class="auth-brand" href="/admin">ERP<span>관리자 페이지</span></a><div class="admin-actions"><a href="/dashboard">ERP로 이동</a><span data-account-name></span><button type="button" class="auth-secondary" data-logout>로그아웃</button></div></header>
+      <div class="admin-heading"><p class="auth-eyebrow">ACCOUNT MANAGEMENT</p><h1>사용자 계정</h1><p class="auth-description">ERP에 접속할 사용자의 계정을 등록합니다.</p></div>
+      <div class="admin-layout">
+        <section class="auth-panel"><h2>계정 등록</h2>
+          <form id="user-form"><fieldset>
+            <label for="user-id">ID</label><input id="user-id" name="login_id" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9._\-]*" placeholder="영문·숫자·점·밑줄·하이픈" autocomplete="off" required />
+            <label for="user-password">비밀번호</label><input id="user-password" name="password" type="password" minlength="8" maxlength="128" placeholder="8자 이상" autocomplete="new-password" required />
+            <label for="user-name">이름</label><input id="user-name" name="name" maxlength="32" placeholder="예: 김민수" autocomplete="off" required />
+            <label for="user-title">직함</label><input id="user-title" name="job_title" maxlength="80" placeholder="예: 대리, 팀장" autocomplete="off" required />
+            <button class="auth-primary" type="submit">계정 등록</button>
+          </fieldset></form>
+          <p class="auth-notice" id="admin-notice" role="status" hidden></p>
+        </section>
+        <section class="auth-panel admin-users"><div class="admin-list-head"><h2>등록된 계정 <span id="user-count"></span></h2><button class="auth-secondary" type="button" id="refresh-users">새로고침</button></div>
+          <div class="admin-table-wrap"><table><thead><tr><th scope="col">ID</th><th scope="col">이름</th><th scope="col">직함</th><th scope="col">권한</th></tr></thead><tbody id="users"><tr><td colspan="4">계정을 불러오는 중입니다.</td></tr></tbody></table></div>
+        </section>
+      </div>
+    </main>
+  </body>
+</html>

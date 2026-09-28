@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date as Date
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 TaskStatus = Literal["todo", "in_progress", "review", "done", "blocked"]
@@ -58,6 +58,8 @@ class CalendarEventUpdate(BaseModel):
 
 
 class WorkTaskCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     title: str = Field(min_length=1, max_length=140)
     start_date: Date
     end_date: Date
@@ -79,6 +81,8 @@ class WorkTaskCreate(BaseModel):
 
 
 class WorkTaskUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     title: str | None = Field(default=None, min_length=1, max_length=140)
     start_date: Date | None = None
     end_date: Date | None = None
@@ -94,6 +98,8 @@ class WorkTaskUpdate(BaseModel):
 
 
 class TodoCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     title: str = Field(min_length=1, max_length=140)
     date: Date
     project_id: str | None = None
@@ -103,6 +109,8 @@ class TodoCreate(BaseModel):
 
 
 class TodoUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     title: str | None = Field(default=None, min_length=1, max_length=140)
     completed: bool | None = None
     project_id: str | None = None
@@ -112,6 +120,8 @@ class TodoUpdate(BaseModel):
 
 
 class TodoReorder(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     ids: list[str] = Field(min_length=1)
 
 
@@ -143,6 +153,7 @@ class MeetingCreate(BaseModel):
     title: str = Field(min_length=1, max_length=140)
     date: Date
     project_id: str | None = None
+    company_id: str | None = Field(default=None, max_length=36)
     start_time: str | None = None
     attendees: list[str] = Field(default_factory=list)
     agenda: str = ""
@@ -154,6 +165,7 @@ class MeetingUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=140)
     date: Date | None = None
     project_id: str | None = None
+    company_id: str | None = Field(default=None, max_length=36)
     start_time: str | None = None
     attendees: list[str] | None = None
     agenda: str | None = None

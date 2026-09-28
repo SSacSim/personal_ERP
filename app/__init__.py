@@ -1,1 +1,1 @@
-"""GAI ERP FastAPI application package."""
+"""ERP FastAPI application package."""

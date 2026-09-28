@@ -3,39 +3,77 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>GAI ERP</title>
+    <meta name="theme-color" content="#23745c" />
+    <title>ERP</title>
     <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/sidebar-order.css?v=20260928" />
+    <link rel="stylesheet" href="/static/team-chat.css?v=20260928-account-profile" />
+    <link rel="stylesheet" href="/static/receipts.css" />
+    <link rel="stylesheet" href="/static/id-info.css" />
+    <link rel="stylesheet" href="/static/pomodoro.css" />
+    <link rel="stylesheet" href="/static/remote-work.css" />
+    <link rel="stylesheet" href="/static/attendance.css" />
   </head>
   <body>
-    <aside class="sidebar">
-      <div class="brand">
-        <span class="brand-mark">G</span>
-        <div>
-          <strong>GAI ERP</strong>
-          <span>Company workspace</span>
-        </div>
+    <a class="skip-link" href="#view">본문으로 바로가기</a>
+    <aside class="sidebar" id="erp-sidebar">
+      <div class="sidebar-header">
+        <a class="brand" href="/dashboard" aria-label="ERP 홈">
+          <div>
+            <strong>ERP</strong>
+            <span>Our everyday workspace</span>
+          </div>
+        </a>
+        <button class="sidebar-toggle" id="sidebar-toggle" type="button" aria-controls="erp-sidebar" aria-expanded="true" aria-label="왼쪽 메뉴 접기" title="메뉴 접기">
+          <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#chevron-left" /></svg>
+        </button>
       </div>
-      <nav class="nav" aria-label="ERP pages">
-        <a href="/dashboard" data-route="dashboard">대시보드</a>
-        <a href="/calendar" data-route="calendar">달력</a>
-        <a href="/tasks" data-route="tasks">작업바</a>
-        <a href="/todos" data-route="todos">TODO</a>
-        <a href="/projects" data-route="projects">프로젝트</a>
+      <nav class="nav" aria-label="주 메뉴">
+        <p class="nav-label">WORKSPACE</p>
+        <a href="/dashboard" data-route="dashboard"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#dashboard" /></svg><span>대시보드</span></a>
+        <p class="nav-label nav-label-records" id="nav-private-label">PRIVATE · 나의 업무</p>
+        <div class="nav-group" data-menu-group="private" role="group" aria-labelledby="nav-private-label">
+          <a href="/tasks" data-route="tasks"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#timeline" /></svg><span>작업 타임라인</span></a>
+          <a href="/todos" data-route="todos"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#check" /></svg><span>할 일</span></a>
+        </div>
+        <p class="nav-label nav-label-records" id="nav-public-label">PUBLIC · 함께 쓰는 공간</p>
+        <div class="nav-group" data-menu-group="public" role="group" aria-labelledby="nav-public-label">
+          <a href="/calendar" data-route="calendar"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#calendar" /></svg><span>캘린더</span></a>
+          <a href="/attendance" data-route="attendance"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#coffee" /></svg><span>연차·반차·재택</span></a>
+          <a href="/pomodoro" data-route="pomodoro"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#timer" /></svg><span>뽀모도로</span></a>
+          <a href="/projects" data-route="projects"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#folder" /></svg><span>프로젝트</span></a>
+          <a href="/chat" data-route="chat"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#chat" /></svg><span>팀 채팅</span></a>
+          <a href="/receipts" data-route="receipts"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#receipt" /></svg><span>영수증</span></a>
+          <a href="/remote-work" data-route="remote-work"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#home-work" /></svg><span>재택근무 기록</span></a>
+          <a href="/meetings" data-route="meetings"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#notes" /></svg><span>회의록</span></a>
+          <a href="/wiki" data-route="wiki"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#book" /></svg><span>위키</span></a>
+          <a href="/id-info" data-route="id-info"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#key" /></svg><span>Info</span></a>
+        </div>
       </nav>
+      <div class="sidebar-footer">
+        <div><strong>ERP 워크스페이스</strong><span>함께 쌓아가는 업무의 기록</span></div>
+      </div>
     </aside>
 
     <main class="shell">
       <header class="topbar">
-        <div>
-          <p class="eyebrow">Internal ERP</p>
+        <div class="topbar-title">
+          <button class="sidebar-toggle sidebar-expand" id="sidebar-expand" type="button" aria-controls="erp-sidebar" aria-expanded="false" aria-label="왼쪽 메뉴 펼치기" title="메뉴 펼치기" hidden>
+            <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#chevron-right" /></svg>
+          </button>
           <h1 id="page-title">대시보드</h1>
         </div>
-        <div class="date-pill" id="today-label"></div>
+        <div class="topbar-actions">
+          <div class="date-pill"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#calendar" /></svg><time id="today-label"></time></div>
+          <div class="account-summary"><strong data-account-name></strong><span data-account-title></span></div>
+          <a class="account-admin-link" href="/admin" data-admin-link hidden>관리자</a>
+          <button class="secondary account-logout" type="button" data-logout>로그아웃</button>
+        </div>
       </header>
 
-      <section id="view" class="view" aria-live="polite"></section>
+      <section id="view" class="view" aria-live="polite" tabindex="-1"></section>
     </main>
 
-    <script src="/static/app.js" type="module"></script>
+    <script src="/static/app.js?v=20260928-menu-order" type="module"></script>
   </body>
 </html>

@@ -7,7 +7,7 @@ import textwrap
 from typing import Any
 
 from app.config import BASE_DIR
-from app.storage import parse_note, split_change_log, vault
+from app.storage import FOLDERS, PRIVATE_NOTE_TYPES, parse_note, split_change_log, vault
 
 
 TOKEN_PATTERN = re.compile(r"[0-9A-Za-z가-힣]{2,}")
@@ -66,10 +66,10 @@ class VaultSource:
         }
 
 
-def answer_from_vault(question: str) -> dict[str, Any]:
+def answer_from_vault(question: str, user_id: str) -> dict[str, Any]:
     question = question.strip()
     tokens = tokenize(question)
-    sources = ranked_sources(tokens)
+    sources = ranked_sources(tokens, user_id)
     prompt_context = build_context(sources)
 
     codex_answer, codex_mode = answer_with_codex(question, prompt_context)
@@ -91,9 +91,9 @@ def tokenize(value: str) -> list[str]:
     return [token.lower() for token in TOKEN_PATTERN.findall(value)]
 
 
-def ranked_sources(tokens: list[str], limit: int = 8) -> list[VaultSource]:
+def ranked_sources(tokens: list[str], user_id: str, limit: int = 8) -> list[VaultSource]:
     sources = []
-    all_sources = iter_search_sources()
+    all_sources = iter_search_sources(user_id)
     for source in all_sources:
         source.score = score_source(source, tokens)
         if source.score > 0:
@@ -104,13 +104,13 @@ def ranked_sources(tokens: list[str], limit: int = 8) -> list[VaultSource]:
     return default_project_sources(all_sources, limit)
 
 
-def iter_search_sources() -> list[VaultSource]:
-    sources = iter_vault_sources()
+def iter_search_sources(user_id: str) -> list[VaultSource]:
+    sources = iter_vault_sources(user_id)
     sources.extend(iter_project_sources())
     return sources
 
 
-def iter_vault_sources() -> list[VaultSource]:
+def iter_vault_sources(user_id: str) -> list[VaultSource]:
     sources: list[VaultSource] = []
     for path in sorted(vault.root.rglob("*.md")):
         if any(part.startswith(".") for part in path.relative_to(vault.root).parts):
@@ -120,6 +120,11 @@ def iter_vault_sources() -> list[VaultSource]:
         except UnicodeDecodeError:
             continue
         if metadata.get("deleted") is True:
+            continue
+        private = metadata.get("type") in PRIVATE_NOTE_TYPES or path.relative_to(vault.root).parts[0] in {
+            FOLDERS[note_type] for note_type in PRIVATE_NOTE_TYPES
+        }
+        if private and (not user_id or metadata.get("user_id") != user_id):
             continue
         title = str(
             metadata.get("title")
@@ -330,9 +335,9 @@ def answer_with_codex(question: str, context: str) -> tuple[str | None, str]:
 def codex_prompt(question: str, context: str) -> str:
     return textwrap.dedent(
         f"""
-        너는 Obsidian vault, docs 폴더, 그리고 run.py가 있는 현재 프로젝트 폴더의 텍스트 파일을 읽고 답변하는 한국어 어시스턴트다.
-        아래 CONTEXT는 질문과 관련도가 높은 파일만 선별한 내용이다.
-        CONTEXT와 현재 작업 디렉터리의 읽을 수 있는 파일에서 확인되지 않는 내용은 추측하지 말고, 확인되지 않는다고 말한다.
+        너는 제공된 CONTEXT를 읽고 답변하는 한국어 어시스턴트다.
+        아래 CONTEXT는 로그인한 사용자의 개인 기록과 공용 자료 중 질문과 관련된 내용을 선별한 것이다.
+        CONTEXT에서 확인되지 않는 내용은 추측하지 말고, 확인되지 않는다고 말한다.
 
         답변 형식 규칙:
         - 사용자가 바로 읽을 수 있게 짧은 문단과 bullet list 중심으로 정리한다.
@@ -354,40 +359,11 @@ def codex_prompt(question: str, context: str) -> str:
 
 
 def answer_with_codex_sdk(prompt: str) -> str | None:
-    try:
-        from openai_codex import ApprovalMode, Codex, CodexConfig, Sandbox
-    except ImportError as exc:
-        return sdk_error_answer(f"openai_codex 패키지를 import할 수 없습니다: {exc}")
-
-    try:
-        model = os.getenv("GAI_ERP_CODEX_MODEL", "").strip() or None
-        config = CodexConfig(
-            cwd=str(BASE_DIR),
-            env={
-                "PYTHONIOENCODING": "utf-8",
-                "LANG": "C.UTF-8",
-                "LC_ALL": "C.UTF-8",
-                "NO_COLOR": "1",
-            },
-        )
-        with Codex(config=config) as codex:
-            thread = codex.thread_start(
-                approval_mode=ApprovalMode.deny_all,
-                cwd=str(BASE_DIR),
-                ephemeral=True,
-                model=model,
-                sandbox=Sandbox.read_only,
-            )
-            result = thread.run(
-                prompt,
-                approval_mode=ApprovalMode.deny_all,
-                cwd=str(BASE_DIR),
-                model=model,
-                sandbox=Sandbox.read_only,
-            )
-    except Exception as exc:
-        return sdk_error_answer(str(exc))
-    return (result.final_response or "").strip() or sdk_error_answer("Codex SDK가 빈 답변을 반환했습니다.")
+    # A read-only Codex sandbox can still read other users' files. Neither a
+    # filtered prompt nor tool hooks constitute an account authorization boundary.
+    # Use the existing local search/report fallback until inference can run with
+    # no filesystem access. Do not re-enable this via the legacy SDK env toggle.
+    return None
 
 
 def sdk_error_answer(message: str) -> str:

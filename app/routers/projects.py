@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from app.models import ProjectCreate, ProjectUpdate
 from app.storage import vault
@@ -13,8 +13,12 @@ def list_projects():
 
 
 @router.post("", status_code=201)
-def create_project(payload: ProjectCreate):
-    return vault.create_project(payload.model_dump())
+def create_project(payload: ProjectCreate, request: Request):
+    data = payload.model_dump()
+    user = getattr(request.state, "user", None)
+    if user and not data.get("owner"):
+        data["owner"] = user["name"]
+    return vault.create_project(data)
 
 
 @router.patch("/{project_id}")

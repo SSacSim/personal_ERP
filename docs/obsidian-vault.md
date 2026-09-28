@@ -20,6 +20,7 @@
 ---
 id: unique-id
 type: todo
+user_id: authenticated-account-id
 date: 2026-06-13
 completed: false
 project_id:
@@ -31,6 +32,10 @@ updated_at: 2026-06-13T23:00:00
 ```
 
 ## LLM Wiki 원칙
+
+`work_task`, `todo`, `report`는 개인 노트입니다. ERP에서는 로그인 계정의 `user_id`와 일치하는 기록만 조회·변경·검색합니다. 저장 폴더는 유지하며 기존 소유자 없는 기록은 admin 계정으로 한 번만 귀속합니다. 계정 분리는 ERP 접근에 적용되며 Obsidian 파일 자체는 계속 로컬 저장소에서 관리합니다.
+
+그 외 노트는 공용입니다. 개인 노트를 원문 파일로 읽을 수 있는 Codex SDK 실행은 사용하지 않고, 상담봇과 주간 보고서는 계정별 필터를 적용한 로컬 처리로 동작합니다.
 
 - 한 업무 항목은 한 Markdown 파일로 저장합니다.
 - frontmatter에는 검색과 필터링에 필요한 짧은 구조화 데이터를 둡니다.

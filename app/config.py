@@ -4,7 +4,7 @@ from typing import Any
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-APP_NAME = "GAI Company ERP"
+APP_NAME = "ERP"
 CONFIG_PATH = Path(os.getenv("GAI_ERP_CONFIG", BASE_DIR / "config.yaml")).resolve()
 
 
