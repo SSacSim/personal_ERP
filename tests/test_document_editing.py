@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app import storage
-from app.routers import meetings, wiki
+from app.routers import assets, meetings, project_records, wiki
 
 
 class DocumentEditingTests(unittest.TestCase):
@@ -20,9 +20,13 @@ class DocumentEditingTests(unittest.TestCase):
         self.vault = storage.ObsidianVault(self.root)
         self.stack.enter_context(patch.object(meetings, "vault", self.vault))
         self.stack.enter_context(patch.object(wiki, "vault", self.vault))
+        self.stack.enter_context(patch.object(assets, "vault", self.vault))
+        self.stack.enter_context(patch.object(project_records, "vault", self.vault))
         app = FastAPI()
         app.include_router(meetings.router)
         app.include_router(wiki.router)
+        app.include_router(assets.router)
+        app.include_router(project_records.router)
         self.client = self.stack.enter_context(TestClient(app))
         self.images = [{"name": "기존 그림.png", "url": "/api/assets/example.png", "content_type": "image/png"}]
 
@@ -92,6 +96,30 @@ class DocumentEditingTests(unittest.TestCase):
         for path in ["meetings", "wiki"]:
             self.assertEqual(self.client.patch(f"/api/{path}/missing", json={"title": "수정"}).status_code, 404)
             self.assertEqual(self.client.get(f"/api/{path}").json()["items"], [])
+
+    def test_uploaded_clipboard_image_survives_document_save_edit_and_reopen(self):
+        data_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6M1sAAAAASUVORK5CYII="
+        response = self.client.post("/api/assets", json={
+            "filename": "붙여넣은 이미지.png", "content_type": "image/png", "data_url": data_url,
+        })
+        self.assertEqual(response.status_code, 201)
+        image = response.json()
+        markdown = f"앞 내용\n\n![붙여넣은 이미지|60]({image['url']})\n\n뒤 내용"
+        for path, field, extra, list_method in [
+            ("meetings", "notes", {"date": "2026-09-29"}, "list_meetings"),
+            ("wiki", "content", {}, "list_wiki_pages"),
+            ("project-records", "content", {"project_id": "project"}, "list_project_records"),
+        ]:
+            with self.subTest(path=path):
+                created = self.client.post(f"/api/{path}", json={"title": "이미지 붙여넣기", field: markdown, "images": [image], **extra})
+                self.assertEqual(created.status_code, 201)
+                saved = created.json()
+                updated = self.client.patch(f"/api/{path}/{saved['id']}", json={field: markdown + "\n\n수정한 내용"})
+                self.assertEqual(updated.status_code, 200)
+                reopened = getattr(storage.ObsidianVault(self.root), list_method)()[0]
+                self.assertIn(markdown, reopened["body"])
+                self.assertEqual(reopened["images"], [image])
+                self.assertEqual(self.client.get(image["url"]).status_code, 200)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 import { currentUser } from "./auth-state.js";
+import { pastedImages } from "./remote-work-inputs.js";
 import { canChangeMessage, mergeChatMessages, EDIT_WINDOW_MS, formatChatName } from "./team-chat-state.js?v=20260928-account-profile";
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
 const MAX_FILES = 5;
@@ -133,6 +134,12 @@ export function mountTeamChat(container) {
     find(".tc-scroll").addEventListener("scroll", closeMessageMenu);
     find(".tc-compose").addEventListener("submit", (event) => { event.preventDefault(); send(); });
     find(".tc-compose textarea").addEventListener("input", () => { clientId = newId(); updateSend(); });
+    find(".tc-compose textarea").addEventListener("paste", (event) => {
+      const images = pastedImages(event.clipboardData);
+      if (!images.length) return;
+      event.preventDefault();
+      addFiles(images);
+    });
     find(".tc-compose textarea").addEventListener("keydown", (event) => {
       if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
         event.preventDefault();

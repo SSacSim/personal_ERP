@@ -10,8 +10,14 @@ router = APIRouter(prefix="/api/calendar", tags=["calendar"])
 
 
 @router.get("")
-def list_events(month: str | None = None, target_date: date | None = Query(default=None, alias="date")):
-    return {"items": vault.list_calendar_events(month=month, target_date=target_date)}
+def list_events(month: str | None = None, target_date: date | None = Query(default=None, alias="date"),
+                start_date: date | None = None, end_date: date | None = None):
+    if (start_date is None) != (end_date is None):
+        raise HTTPException(status_code=422, detail="조회 시작일과 종료일을 함께 입력해 주세요.")
+    if start_date and end_date and end_date < start_date:
+        raise HTTPException(status_code=422, detail="조회 종료일은 시작일보다 빠를 수 없습니다.")
+    return {"items": vault.list_calendar_events(month=month, target_date=target_date,
+                                                start_date=start_date, end_date=end_date)}
 
 
 @router.post("/events", status_code=201)

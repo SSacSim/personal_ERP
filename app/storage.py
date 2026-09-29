@@ -427,7 +427,8 @@ class ObsidianVault:
         title = str(metadata.get("title", "calendar_event"))
         return self.write("calendar_event", title, metadata, note.body, note.path, log_action="삭제").as_dict()
 
-    def list_calendar_events(self, month: str | None = None, target_date: date | None = None) -> list[dict[str, Any]]:
+    def list_calendar_events(self, month: str | None = None, target_date: date | None = None,
+                             start_date: date | None = None, end_date: date | None = None) -> list[dict[str, Any]]:
         month_start = None
         month_end = None
         if month:
@@ -447,6 +448,8 @@ class ObsidianVault:
             event_end = parse_iso_date(note.metadata.get("end_date")) or event_start
             event_date = str(note.metadata.get("date", ""))
             if event_start is None:
+                if start_date or end_date:
+                    continue
                 if month and not event_date.startswith(month):
                     continue
                 if target_date and event_date != target_date.isoformat():
@@ -457,6 +460,10 @@ class ObsidianVault:
             if month_start and month_end and (event_end < month_start or event_start > month_end):
                 continue
             if target_date and not (event_start <= target_date <= event_end):
+                continue
+            if start_date and event_end < start_date:
+                continue
+            if end_date and event_start > end_date:
                 continue
             items.append(note.as_dict())
         return sorted(items, key=lambda item: (item.get("start_date") or item.get("date", ""), item.get("start_time", ""), item.get("title", "")))

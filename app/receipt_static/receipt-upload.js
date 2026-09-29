@@ -1,5 +1,6 @@
 import { submitReceiptBatch } from "./receipt-batch.js";
 import { requireSession, setupAccountBar } from "/static/auth-state.js";
+import { clipboardImage, pastedImages } from "/static/remote-work-inputs.js";
 
 const loggedInUser = await requireSession();
 setupAccountBar();
@@ -107,7 +108,21 @@ registrant.value = loggedInUser.name;
 imageInput.addEventListener("change", () => {
   const files = [...imageInput.files];
   imageInput.value = "";
-  if (sending || !files.length) return;
+  addPhotos(files);
+});
+form.addEventListener("paste", (event) => {
+  const images = pastedImages(event.clipboardData);
+  if (!images.length) return;
+  event.preventDefault();
+  try {
+    addPhotos(images.map((image) => clipboardImage(image)));
+  } catch (error) {
+    message(error.message, true);
+  }
+});
+
+function addPhotos(files) {
+  if (sending || entries.some((entry) => entry.details) || !files.length) return;
   const errors = [];
   for (const file of files) {
     if ((file.type && !allowedTypes.has(file.type)) || !/\.(jpe?g|png|webp|gif)$/i.test(file.name) || file.size === 0 || file.size > 10 * 1024 * 1024) {
@@ -124,7 +139,7 @@ imageInput.addEventListener("change", () => {
   }
   renderSelections();
   message(errors.join("\n"), errors.length > 0);
-});
+}
 preview.addEventListener("error", (event) => {
   if (event.target.tagName !== "IMG") return;
   const card = event.target.closest("[data-entry-id]");

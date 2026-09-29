@@ -1,4 +1,4 @@
-import { mountTeamChat } from "./team-chat.js?v=20260928-account-profile";
+import { mountTeamChat } from "./team-chat.js?v=20260929-image-paste";
 import { mountReceipts } from "./receipts.js";
 import { mountIdInfo } from "./id-info.js?v=20260928-info-lock";
 import { mountPomodoro, mountPomodoroIndicator } from "./pomodoro.js";
@@ -6,6 +6,8 @@ import { mountRemoteWork } from "./remote-work.js";
 import { mountAttendance } from "./attendance.js";
 import { requireSession, setupAccountBar, currentUser, userStorageKey } from "./auth-state.js";
 import { setupSidebarOrder } from "./sidebar-order.js?v=20260928";
+import { setupInlineImageUpload, validateInlineImage } from "./inline-image-upload.js";
+import { pastedImages } from "./remote-work-inputs.js";
 
 await requireSession();
 setupAccountBar();
@@ -63,7 +65,6 @@ let projectDetailTab = "meetings";
 let selectedProjectResourceId = null;
 let projectResourceMode = "view";
 let projectInfoEditOpen = false;
-let activeRichEditor = null;
 let activeImageResize = null;
 let chatWidgetOpen = false;
 let chatSending = false;
@@ -482,8 +483,12 @@ async function renderDashboard() {
 
 async function renderCalendar() {
   const monthKey = `${calendarMonth.getFullYear()}-${pad(calendarMonth.getMonth() + 1)}`;
-  const { items } = await api(`/api/calendar?month=${monthKey}`);
   const calendarLayout = getCalendarLayout(calendarMonth);
+  const query = new URLSearchParams({
+    start_date: toDateInputValue(calendarLayout.start),
+    end_date: toDateInputValue(addDays(calendarLayout.start, calendarLayout.totalCells - 1)),
+  });
+  const { items } = await api(`/api/calendar?${query}`);
   const multiDayLayout = getMultiDayLayout(items, calendarLayout);
   const eventsByDate = calendarEventsByDate(items, calendarLayout);
   view.innerHTML = `
@@ -1860,16 +1865,16 @@ function setupProjectWorkspaceDialog(project) {
     const isRecord = projectDetailTab === "records";
     const bodyContent = String(form.get(isRecord ? "content" : "notes") || "");
     if (isRecord && !bodyContent.trim()) {
-      formEl.querySelector("[name='content']")?.focus();
+      formEl.querySelector("[data-rich-editor='content']")?.focus();
       return;
     }
-    const images = imagesReferencedInContent(uniqueImages([...existingFormImages(form), ...uploadedInlineImages(formEl)]), bodyContent);
+    const images = imagesReferencedInContent(uniqueImages([...existingFormImages(form), ...uploadedInlineImages(formEl)]), `${form.get("agenda") || ""}\n${bodyContent}`);
     const payload = isRecord
       ? {
           project_id: project.id,
           title: projectRecordTitleFromContent(bodyContent),
           content: form.get("content") || "",
-          images: [],
+          images,
         }
       : {
           project_id: project.id,
@@ -1970,6 +1975,12 @@ function setupProjectFileUpload(project) {
   });
   dropzone.addEventListener("drop", async (event) => {
     await uploadSelectedFiles(event.dataTransfer?.files);
+  });
+  dropzone.addEventListener("paste", (event) => {
+    const images = pastedImages(event.clipboardData);
+    if (!images.length) return;
+    event.preventDefault();
+    void uploadSelectedFiles(images);
   });
 }
 
@@ -2230,7 +2241,7 @@ function meetingResourceForm(item = null, { standalone = false, defaultCompanyId
       <label>일자<input name="date" type="date" required value="${escapeHtml(item?.date || toDateInputValue(new Date()))}" /></label>
       <label>시작 시간<input name="start_time" type="time" value="${escapeHtml(item?.start_time || "")}" /></label>
       <label class="full">참석자<input name="attendees" value="${escapeHtml(attendees)}" placeholder="쉼표 또는 줄바꿈으로 구분" /></label>
-      <label class="full">안건<textarea name="agenda">${escapeHtml(meetingSection(item, "안건"))}</textarea></label>
+      ${richTextEditor("agenda", "안건", meetingSection(item, "안건"))}
       ${richTextEditor("notes", "회의 내용", meetingContentWithImages(item))}
       <div class="resource-form-actions full">
         ${item || standalone ? `<button class="secondary" type="button" ${standalone ? "data-document-cancel" : "data-project-resource-cancel"}>취소</button>` : ""}
@@ -2264,9 +2275,8 @@ function projectRecordForm(item = null) {
   const submitLabel = item ? "기록 수정" : "기록 저장";
   return `
     <form class="record-compose-form" id="project-resource-form">
-      <label class="record-compose-label">기록
-        <textarea class="record-compose-textarea" name="content" required placeholder="프로젝트 진행 중 남겨둘 내용을 적어주세요.">${escapeHtml(projectRecordPlainContent(item))}</textarea>
-      </label>
+      <input name="existing_images" type="hidden" value="${escapeHtml(JSON.stringify(resourceImages(item)))}" />
+      ${richTextEditor("content", "기록", noteContentWithImages(item))}
       <div class="resource-form-actions">
         ${item ? `<button class="secondary" type="button" data-project-resource-cancel>취소</button>` : ""}
         <button type="submit">${submitLabel}</button>
@@ -2293,7 +2303,7 @@ function projectRecordFeedItem(item) {
           <button class="danger-button" type="button" data-project-record-delete="${escapeHtml(item.id)}">삭제</button>
         </div>
       </div>
-      <p>${escapeHtml(projectRecordPlainContent(item))}</p>
+      ${renderRichText(noteContentWithImages(item))}
     </article>
   `;
 }
@@ -2408,7 +2418,7 @@ function projectFileDropzone() {
     <section class="file-dropzone" data-project-file-dropzone tabindex="0" role="button" aria-label="자료 파일 업로드">
       <input class="project-file-input" type="file" multiple data-project-file-input />
       <strong>파일을 끌어놓거나 클릭해서 업로드</strong>
-      <span>문서, 이미지, 압축파일 등 모든 형식을 등록할 수 있습니다.</span>
+      <span>문서, 이미지, 압축파일 등을 등록할 수 있습니다. 복사한 이미지는 Ctrl+V로 붙여넣으세요.</span>
     </section>
   `;
 }
@@ -2445,19 +2455,17 @@ function notePlainContent(item) {
 }
 
 function meetingContentWithImages(item) {
-  return contentWithLegacyImages(meetingSection(item, "회의 내용"), resourceImages(item));
+  const agenda = meetingSection(item, "안건");
+  return contentWithLegacyImages(meetingSection(item, "회의 내용"), resourceImages(item).filter((image) => !agenda.includes(image.url)));
 }
 
 function noteContentWithImages(item) {
   return contentWithLegacyImages(notePlainContent(item), resourceImages(item));
 }
 
-function projectRecordPlainContent(item) {
-  return notePlainContent(item);
-}
-
 function projectRecordTitleFromContent(content) {
   const firstLine = String(content || "")
+    .replace(/!\[[^\]]*\]\([^)]+\)/g, "")
     .split(/\r?\n/)
     .map((line) => line.trim())
     .find(Boolean);
@@ -2504,14 +2512,11 @@ function setupInlineImageEditors(root = document) {
     return;
   }
   root.querySelectorAll("[data-rich-editor]").forEach((surface) => {
-    surface.addEventListener("focus", () => {
-      activeRichEditor = surface;
-    });
-    surface.addEventListener("click", () => {
-      activeRichEditor = surface;
-    });
-    surface.addEventListener("keyup", () => {
-      activeRichEditor = surface;
+    setupInlineImageUpload(surface, {
+      upload: uploadImageFile,
+      renderImage: (image) => editorImageHtml({ ...image, width: 60 }),
+      onUploaded: (image) => appendUploadedInlineImages(surface.closest("form"), [image]),
+      onChange: () => syncRichTextEditor(surface),
     });
     surface.addEventListener("input", () => {
       syncRichTextEditor(surface);
@@ -2543,46 +2548,6 @@ function setupInlineImageEditors(root = document) {
   root.querySelectorAll("[data-image-resize-handle]").forEach((handle) => {
     handle.addEventListener("pointerdown", (event) => {
       startEditorImageResize(event, handle);
-    });
-  });
-  root.querySelectorAll("[data-inline-image-button]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const editor = button.closest("[data-inline-editor]");
-      const surface = editor?.querySelector("[data-rich-editor]");
-      if (surface) {
-        activeRichEditor = surface;
-        surface.focus();
-      }
-      editor?.querySelector("[data-inline-image-input]")?.click();
-    });
-  });
-  root.querySelectorAll("[data-inline-image-input]").forEach((input) => {
-    input.addEventListener("change", async () => {
-      const editor = input.closest("[data-inline-editor]");
-      const surface = editor?.querySelector("[data-rich-editor]");
-      const button = editor?.querySelector("[data-inline-image-button]");
-      const files = [...(input.files || [])];
-      if (!surface || !files.length) {
-        return;
-      }
-      const buttonText = button?.textContent || "";
-      if (button) {
-        button.disabled = true;
-        button.textContent = "업로드 중";
-      }
-      try {
-        const images = await Promise.all(files.map(uploadImageFile));
-        appendUploadedInlineImages(input.form, images);
-        insertImagesIntoEditor(surface, images);
-      } catch (error) {
-        alert(error.message || "이미지를 업로드하지 못했습니다.");
-      } finally {
-        input.value = "";
-        if (button) {
-          button.disabled = false;
-          button.textContent = buttonText || "이미지 삽입";
-        }
-      }
     });
   });
 }
@@ -2651,68 +2616,6 @@ function editorImageHtml(image) {
       </div>
     </figure>
   `;
-}
-
-function insertImagesIntoEditor(surface, images) {
-  if (!surface) {
-    return;
-  }
-  const target = activeRichEditor === surface ? currentEditorBlock(surface) : null;
-  let anchor = target || surface.lastElementChild;
-  if (anchor?.matches?.(".editor-rich-image")) {
-    anchor = anchor.nextElementSibling || anchor;
-  }
-  images.forEach((image) => {
-    const node = htmlToElement(editorImageHtml({ ...image, width: image?.width ?? 60 }));
-    if (!node) {
-      return;
-    }
-    if (anchor && anchor.parentElement === surface) {
-      anchor.after(node);
-    } else {
-      surface.append(node);
-    }
-    anchor = node;
-  });
-  const paragraph = document.createElement("p");
-  paragraph.append(document.createElement("br"));
-  if (anchor && anchor.parentElement === surface) {
-    anchor.after(paragraph);
-  } else {
-    surface.append(paragraph);
-  }
-  placeCaretIn(paragraph);
-  syncRichTextEditor(surface);
-}
-
-function htmlToElement(html) {
-  const template = document.createElement("template");
-  template.innerHTML = html.trim();
-  return template.content.firstElementChild;
-}
-
-function currentEditorBlock(surface) {
-  const selection = window.getSelection();
-  if (!selection?.rangeCount || !surface.contains(selection.anchorNode)) {
-    return null;
-  }
-  let node = selection.anchorNode;
-  if (node.nodeType === Node.TEXT_NODE) {
-    node = node.parentElement;
-  }
-  while (node && node.parentElement !== surface) {
-    node = node.parentElement;
-  }
-  return node || null;
-}
-
-function placeCaretIn(element) {
-  const range = document.createRange();
-  range.selectNodeContents(element);
-  range.collapse(false);
-  const selection = window.getSelection();
-  selection.removeAllRanges();
-  selection.addRange(range);
 }
 
 function resizeEditorImage(figure, delta) {
@@ -2828,12 +2731,11 @@ function collectEditorMarkdown(node, blocks) {
     blocks.push(markdownImage({ name: node.dataset.alt, url: node.dataset.url, width: Number(node.dataset.width || 100) }));
     return;
   }
-  if (node.matches(".editor-image-controls")) {
+  if (node.matches(".editor-image-controls, [data-image-upload]")) {
     return;
   }
   if (node.matches("p, div")) {
-    const nestedImages = [...node.children].filter((child) => child.matches?.(".editor-rich-image"));
-    if (nestedImages.length) {
+    if (node.querySelector(".editor-rich-image, [data-image-upload]")) {
       node.childNodes.forEach((child) => collectEditorMarkdown(child, blocks));
       return;
     }
@@ -2853,7 +2755,7 @@ function editorElementText(element) {
       text += node.textContent;
       return;
     }
-    if (node.nodeType !== Node.ELEMENT_NODE || node.matches(".editor-image-controls, .editor-rich-image")) {
+    if (node.nodeType !== Node.ELEMENT_NODE || node.matches(".editor-image-controls, .editor-rich-image, [data-image-upload]")) {
       return;
     }
     if (node.tagName === "BR") {
@@ -2996,9 +2898,7 @@ function existingFormImages(form) {
 }
 
 async function uploadImageFile(file) {
-  if (!file.type.startsWith("image/")) {
-    throw new Error("이미지 파일만 첨부할 수 있습니다.");
-  }
+  validateInlineImage(file);
   const dataUrl = await fileToDataUrl(file);
   return api("/api/assets", {
     method: "POST",
@@ -3230,11 +3130,6 @@ async function renderDocumentPage(kind) {
     if (saving || !active()) return;
     const formEl = event.currentTarget;
     const feedback = view.querySelector(".document-feedback");
-    if (formEl.querySelector("[data-inline-image-button]:disabled")) {
-      feedback.textContent = "이미지 업로드가 끝난 뒤 저장해 주세요.";
-      feedback.hidden = false;
-      return;
-    }
     syncRichTextEditors(formEl);
     const form = new FormData(formEl);
     const title = String(form.get("title") || "").trim();
