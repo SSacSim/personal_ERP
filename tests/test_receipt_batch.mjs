@@ -3,60 +3,48 @@ import assert from "node:assert/strict";
 import { submitReceiptBatch } from "../app/receipt_static/receipt-batch.js";
 
 const details = { registrant: "홍길동", content: "출장 영수증" };
-const receipt = (id) => ({ id, file: { name: "영수증.png", size: 100 }, status: "ready", details: null });
+const receipt = (id) => ({ file: new File([id], `${id}.JPG`, { type: "image/jpg" }) });
 
-test("uploads each selected photo separately with common details and preserves order", async () => {
+test("three photos are sent in one request as original files in selection order", async () => {
   const entries = [receipt("one"), receipt("two"), receipt("three")];
   const calls = [];
-  let active = 0;
-  let maximum = 0;
-  const result = await submitReceiptBatch(entries, details, async (entry) => {
-    maximum = Math.max(maximum, ++active);
-    await Promise.resolve();
-    calls.push({ id: entry.id, details: entry.details, file: entry.file });
-    active--;
-    return { id: entry.id, created_at: "2026-09-28T12:00:00+09:00" };
+  const result = await submitReceiptBatch(entries, details, { id: "one-receipt" }, async (body) => {
+    calls.push(body);
+    return { id: "one-receipt", image_count: 3 };
   });
-  assert.deepEqual(result, { saved: 3, failed: 0 });
-  assert.deepEqual(calls.map((call) => call.id), ["one", "two", "three"]);
-  assert.ok(calls.every((call) => call.details.registrant === details.registrant && call.details.content === details.content));
-  assert.equal(maximum, 1, "large images should be read and uploaded one at a time");
-  assert.ok(entries.every((entry) => entry.result.id === entry.id));
+  assert.equal(calls.length, 1);
+  assert.deepEqual(JSON.parse(calls[0].get("metadata")), { submission_id: "one-receipt", ...details });
+  assert.deepEqual(calls[0].getAll("images").map((file) => file.name), ["one.JPG", "two.JPG", "three.JPG"]);
+  assert.deepEqual(await Promise.all(calls[0].getAll("images").map((file) => file.text())), ["one", "two", "three"]);
+  assert.deepEqual(result, { id: "one-receipt", image_count: 3 });
 });
 
-test("continues after one failure, then retries only that photo with its original ID and details", async () => {
+test("failed groups retry with the original request ID, details and every photo", async () => {
   const entries = [receipt("one"), receipt("two"), receipt("three")];
-  const calls = [];
-  let fail = true;
-  const upload = async (entry) => {
-    calls.push({ id: entry.id, ...entry.details });
-    if (entry.id === "two" && fail) throw new Error("일시적인 저장 오류");
-    return { id: entry.id };
-  };
-  assert.deepEqual(await submitReceiptBatch(entries, details, upload), { saved: 2, failed: 1 });
-  assert.deepEqual(entries.map((entry) => entry.status), ["saved", "error", "saved"]);
-  assert.equal(entries[1].error, "일시적인 저장 오류");
-  fail = false;
-  assert.deepEqual(await submitReceiptBatch(entries, { registrant: "변경 시도", content: "다른 내용" }, upload), { saved: 3, failed: 0 });
-  assert.deepEqual(calls.map((call) => call.id), ["one", "two", "three", "two"]);
-  assert.deepEqual(calls.at(-1), { id: "two", ...details });
-  assert.equal(entries[1].error, "");
+  const submission = { id: "stable-id" };
+  await assert.rejects(submitReceiptBatch(entries, details, submission, async () => { throw new Error("network failure"); }));
+  assert.equal(submission.result, undefined);
+  await submitReceiptBatch([receipt("different")], { content: "변경 시도" }, submission, async (body) => {
+    assert.deepEqual(JSON.parse(body.get("metadata")), { submission_id: "stable-id", ...details });
+    assert.equal(body.getAll("images").length, 3);
+    return { id: "stable-id" };
+  });
 });
 
-test("a lost response can be retried without creating another server record", async () => {
-  const entries = [receipt("stable-id")];
+test("retrying a lost response does not create a second receipt", async () => {
+  const entries = [receipt("one"), receipt("two"), receipt("three")];
+  const submission = { id: "stable-id" };
   const server = new Map();
   let loseResponse = true;
-  const upload = async (entry) => {
-    if (!server.has(entry.id)) server.set(entry.id, { id: entry.id, ...entry.details });
+  const upload = async (body) => {
+    const { submission_id } = JSON.parse(body.get("metadata"));
+    if (!server.has(submission_id)) server.set(submission_id, { id: submission_id, image_count: body.getAll("images").length });
     if (loseResponse) throw Object.assign(new Error("timeout"), { name: "AbortError" });
-    return server.get(entry.id);
+    return server.get(submission_id);
   };
-  assert.deepEqual(await submitReceiptBatch(entries, details, upload), { saved: 0, failed: 1 });
-  assert.match(entries[0].error, /응답이 지연/);
+  await assert.rejects(submitReceiptBatch(entries, details, submission, upload));
   loseResponse = false;
-  assert.deepEqual(await submitReceiptBatch(entries, details, upload), { saved: 1, failed: 0 });
+  assert.deepEqual(await submitReceiptBatch(entries, details, submission, upload), { id: "stable-id", image_count: 3 });
   assert.equal(server.size, 1);
-  assert.equal(entries[0].result.id, "stable-id");
-  await submitReceiptBatch(entries, details, () => { assert.fail("completed receipts must not be uploaded again"); });
+  await submitReceiptBatch(entries, details, submission, () => { assert.fail("completed receipts must not be uploaded again"); });
 });

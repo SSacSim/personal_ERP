@@ -17,11 +17,12 @@
 .receipt-row { cursor: pointer; transition: background-color .15s; }
 .receipt-row:hover, .receipt-row:focus-within { background: var(--accent-soft); }
 .receipt-thumbnail { display: block; width: 48px; height: 56px; border: 1px solid var(--line); border-radius: 6px; background: #f4f6f3; object-fit: contain; }
+.receipt-photo-count { display: block; width: 48px; margin-top: 4px; color: var(--muted); font-size: 11px; text-align: center; }
 .receipt-registrant { font-weight: 600; }
 .receipt-date { color: var(--muted); font-size: 12px; line-height: 1.7; }
 .receipt-summary { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; line-height: 1.7; }
 .receipt-row-actions { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
-.receipt-open, .receipt-download { padding: 6px 10px; font-size: 12px; }
+.receipt-open, .receipt-download, .receipt-gallery-open { padding: 6px 10px; font-size: 12px; }
 .receipts-status { padding: 28px; border: 1px dashed var(--line); border-radius: 12px; color: var(--muted); text-align: center; }
 .receipts-status.error { color: var(--danger); border-color: #f0c4bc; }
 .receipts-pagination { display: flex; justify-content: center; align-items: center; gap: 16px; margin-top: 24px; font-size: 13px; }
@@ -37,6 +38,15 @@ body.receipts-modal-open { overflow: hidden; }
 .receipt-dialog-body { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .receipt-detail-photo { display: flex; align-items: flex-start; justify-content: center; margin: 0; padding: 24px; background: #f1f4f0; }
 .receipt-detail-photo img { display: block; max-width: 100%; width: auto; height: auto; max-height: min(65dvh, 640px); object-fit: contain; }
+.receipt-gallery { min-width: 0; align-self: start; background: #f1f4f0; }
+.receipt-gallery-meta { padding: 0 20px 16px; }
+.receipt-gallery-meta p { display: grid; gap: 5px; margin: 0 0 12px; font-size: 12px; }
+.receipt-gallery-meta span { color: var(--muted); overflow-wrap: anywhere; }
+.receipt-gallery-meta .button-link { font-size: 12px; }
+.receipt-photo-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(58px, 1fr)); gap: 8px; padding: 0 20px 20px; }
+.receipt-photo-choice { display: grid; gap: 4px; justify-items: center; min-width: 0; padding: 5px; border: 2px solid transparent; border-radius: 7px; color: var(--muted); background: var(--panel); font-size: 11px; }
+.receipt-photo-choice img { width: 100%; height: 52px; object-fit: contain; }
+.receipt-photo-choice[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .receipt-detail-info { min-width: 0; padding: 24px; }
 .receipt-detail-info dl { display: grid; gap: 22px; margin: 0 0 26px; }
 .receipt-detail-info dt { margin-bottom: 7px; color: var(--muted); font-size: 12px; }

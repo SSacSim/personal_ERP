@@ -36,8 +36,10 @@ class Element {
     return [];
   }
   closest(selector) { return this.matches(selector) ? this : this.parent?.closest(selector) || null; }
-  matches(selector) { return this.selector === selector || (selector === "button" && /^\[data-(edit|delete|cancel-edit|save)\]$/.test(this.selector)); }
+  matches(selector) { return this.selector === selector || (selector === "button" && /^\[data-(edit|delete|cancel-edit|save|photo-index)\]$/.test(this.selector)); }
   hasAttribute(name) { return this.selector === `[${name}]`; }
+  removeAttribute(name) { delete this[name]; }
+  setAttribute(name, value) { this[name] = value; }
   contains() { return false; }
   focus() { if (!this.disabled) document.activeElement = this; }
   reportValidity() { return true; }
@@ -55,7 +57,11 @@ const receipt = (i) => ({ id: `receipt-${i}`, registrant: "홍길동", content: 
 async function environment(t, count = 1) {
   const previous = Object.fromEntries(["document", "window", "fetch", "setInterval", "clearInterval", "FileReader"].map((key) => [key, globalThis[key]]));
   const env = { records: Array.from({ length: count }, (_, i) => receipt(i)), calls: [], confirm: false, intercept: null };
-  globalThis.document = { body: new Element(), activeElement: null, hidden: false };
+  globalThis.document = { body: new Element(), activeElement: null, hidden: false, createElement() {
+    const image = new Element();
+    image.decode = () => env.failDecode ? Promise.reject(new Error("decode failed")) : Promise.resolve();
+    return image;
+  } };
   globalThis.window = { confirm: () => env.confirm };
   globalThis.setInterval = () => 1;
   globalThis.clearInterval = () => {};
@@ -73,7 +79,7 @@ async function environment(t, count = 1) {
     }
     if (options.method === "PATCH") {
       const item = env.records.find((entry) => url.endsWith("/" + entry.id));
-      Object.assign(item, JSON.parse(options.body), { updated_at: "2026-10-01T13:00:00+09:00" });
+      Object.assign(item, JSON.parse(options.body instanceof FormData ? options.body.get("metadata") : options.body), { updated_at: "2026-10-01T13:00:00+09:00" });
       return json(item);
     }
     if (options.method === "DELETE") {
@@ -146,9 +152,10 @@ test("uppercase JPG replacement keeps the original filename and bytes in the edi
   await env.detail.dispatch("change", input);
   assert.equal(env.detail.querySelector("[data-save]").disabled, false);
   await env.submit("교체한 영수증");
-  assert.deepEqual(JSON.parse(env.writes()[0].options.body), {
-    content: "교체한 영수증", filename: "교체.JPG", image_base64: Buffer.from("test image bytes").toString("base64"),
-  });
+  const body = env.writes()[0].options.body;
+  assert.deepEqual(JSON.parse(body.get("metadata")), { content: "교체한 영수증" });
+  assert.equal(body.getAll("images")[0].name, "교체.JPG");
+  assert.equal(await body.getAll("images")[0].text(), "test image bytes");
 });
 
 test("blank content and unreadable replacement images cannot be saved", async (t) => {
@@ -159,11 +166,48 @@ test("blank content and unreadable replacement images cannot be saved", async (t
   assert.equal(env.writes().length, 0);
   const input = env.detail.querySelector("#receipt-photo");
   input.files = [new File(["invalid image"], "broken.JPG", { type: "image/jpeg" })];
-  env.detail.querySelector(".receipt-detail-photo img").decode = () => Promise.reject(new Error("decode failed"));
+  env.failDecode = true;
   await env.detail.dispatch("change", input);
   assert.equal(env.detail.querySelector("[data-save]").disabled, true);
   await env.submit("수정 내용");
   assert.equal(env.writes().length, 0);
+});
+
+test("each photo in a receipt can be selected and downloaded by its own URL and filename", async (t) => {
+  const env = await environment(t);
+  env.records[0].images = [1, 2, 3].map((index) => ({ filename: `사진${index}.JPG`, image_url: `/api/receipts/receipt-0/images/${index}` }));
+  env.container.querySelector("[data-refresh]").dispatch("click");
+  await settle();
+  assert.match(env.container.querySelector("tbody").innerHTML, /3장/);
+  env.open();
+  assert.match(env.detail.querySelector("[data-gallery]").innerHTML, /사진 3 보기/);
+  for (const index of [1, 2, 0]) {
+    const button = env.detail.querySelector("[data-photo-index]");
+    button.dataset.photoIndex = String(index);
+    await env.detail.dispatch("click", button);
+    assert.equal(env.detail.querySelector("[data-photo-position]").textContent, `사진 ${index + 1} / 3`);
+    assert.equal(env.detail.querySelector(".receipt-detail-photo img").src, env.records[0].images[index].image_url);
+    assert.equal(env.detail.querySelector("[data-photo-download]").href, env.records[0].images[index].image_url + "?download=true");
+    assert.equal(env.detail.querySelector("[data-photo-download]").download, `사진${index + 1}.JPG`);
+  }
+});
+
+test("all replacement photos are sent together and cancel does not change existing photos", async (t) => {
+  const env = await environment(t);
+  env.open();
+  await env.click("edit");
+  const input = env.detail.querySelector("#receipt-photo");
+  input.files = [new File(["first"], "first.JPG"), new File(["second"], "second.PNG")];
+  await env.detail.dispatch("change", input);
+  assert.match(env.detail.querySelector("[data-gallery]").innerHTML, /사진 2 보기/);
+  await env.click("cancel-edit");
+  assert.equal(env.writes().length, 0);
+  await env.click("edit");
+  const retryInput = env.detail.querySelector("#receipt-photo");
+  retryInput.files = input.files;
+  await env.detail.dispatch("change", retryInput);
+  await env.submit("사진 교체");
+  assert.deepEqual(env.writes()[0].options.body.getAll("images").map((file) => file.name), ["first.JPG", "second.PNG"]);
 });
 
 test("delete requires confirmation, preserves the dialog on failure and removes the row on retry", async (t) => {

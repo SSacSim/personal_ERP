@@ -3,6 +3,7 @@
 Runs the real application against a temporary vault; never touches live data.
 """
 import base64
+from io import BytesIO
 import os
 from pathlib import Path
 import socket
@@ -19,6 +20,7 @@ except ImportError:
     sync_playwright = None
 
 from app.auth_store import AuthStore
+from PIL import Image
 
 
 PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6M1sAAAAASUVORK5CYII="
@@ -60,7 +62,7 @@ class ImagePasteBrowserTests(unittest.TestCase):
             raise RuntimeError("Temporary test server did not start")
         cls.playwright = sync_playwright().start()
         cls.addClassCleanup(cls.playwright.stop)
-        cls.browser = cls.playwright.chromium.launch(headless=True)
+        cls.browser = cls.playwright.chromium.launch(headless=True, channel=os.getenv("GAI_ERP_TEST_BROWSER") or None)
         cls.addClassCleanup(cls.browser.close)
 
     def setUp(self):
@@ -178,6 +180,95 @@ class ImagePasteBrowserTests(unittest.TestCase):
         self.paste("#content", count=2)
         expect(self.page.locator(".preview-card")).to_have_count(2)
         expect(self.page.locator("#selection-count")).to_contain_text("2장")
+
+    def receipt_photos(self):
+        photos = []
+        for index, color in enumerate(["#f8e6cf", "#e0eee4", "#dfe7f3"], 1):
+            output = BytesIO()
+            with Image.new("RGB", (300, 440), color) as image:
+                image.save(output, format="JPEG")
+            photos.append({"name": f"Screenshot_{index}.JPG", "mimeType": "image/jpg", "buffer": output.getvalue() + b"mobile metadata"})
+        return photos
+
+    def test_receipt_group_registration_gallery_download_and_replacement(self):
+        errors = []
+        self.page.on("pageerror", lambda error: errors.append(str(error)))
+        photos = self.receipt_photos()
+        for width in [1200, 390]:
+            with self.subTest(viewport=width):
+                self.page.set_viewport_size({"width": width, "height": 844})
+                before = self.context.request.get(self.origin + "/api/receipts").json()["total"]
+                self.page.goto(self.origin + "/receipt-upload")
+                self.page.locator("#image").set_input_files(photos)
+                expect(self.page.locator(".preview-card")).to_have_count(3)
+                self.page.locator("#content").fill(f"사진 3장 묶음 검증 {width}")
+                with self.page.expect_response(lambda response: response.url.endswith("/api/receipts") and response.request.method == "POST") as saved:
+                    self.page.locator("#submit-button").click()
+                self.assertEqual(saved.value.status, 201)
+                record = saved.value.json()
+                self.assertEqual(record["image_count"], 3)
+                expect(self.page.locator("#notice")).to_contain_text("사진 3장이 포함된 영수증 1건")
+                self.assertEqual(self.context.request.get(self.origin + "/api/receipts").json()["total"], before + 1)
+                self.page.goto(self.origin + "/receipts")
+                self.page.locator(f'[data-receipt-id="{record["id"]}"] .receipt-open').click()
+                expect(self.page.locator(".receipt-dialog")).to_be_visible()
+                expect(self.page.locator("[data-photo-index]")).to_have_count(3)
+                for index, photo in enumerate(photos):
+                    self.page.get_by_role("button", name=f"사진 {index + 1} 보기", exact=True).click()
+                    expect(self.page.locator("[data-photo-position]")).to_have_text(f"사진 {index + 1} / 3")
+                    expect(self.page.locator(".receipt-detail-photo img")).to_have_attribute("src", record["images"][index]["image_url"])
+                    with self.page.expect_download() as downloaded:
+                        self.page.locator("[data-photo-download]").click()
+                    self.assertEqual(downloaded.value.suggested_filename, photo["name"])
+                    self.assertEqual(Path(downloaded.value.path()).read_bytes(), photo["buffer"])
+                bounds = self.page.locator(".receipt-dialog").bounding_box()
+                self.assertGreaterEqual(bounds["x"], 0)
+                self.assertLessEqual(bounds["x"] + bounds["width"], width)
+                if os.getenv("GAI_ERP_TEST_SCREENSHOTS"):
+                    destination = Path(os.environ["GAI_ERP_TEST_SCREENSHOTS"])
+                    destination.mkdir(parents=True, exist_ok=True)
+                    self.page.screenshot(path=str(destination / f"receipt-group-{width}.png"))
+                # A content edit sets updated_at; replacement Blob URLs must still decode.
+                self.page.locator("[data-edit]").click()
+                self.page.locator("#receipt-content").fill("내용 수정 후 사진 교체")
+                self.page.locator("[data-save]").click()
+                expect(self.page.locator("[data-detail-notice]")).to_have_text("저장했습니다.")
+                self.page.locator("[data-edit]").click()
+                self.page.locator("#receipt-photo").set_input_files(photos[:2])
+                expect(self.page.locator("[data-detail-notice]")).to_contain_text("사진 2장으로 전체 교체")
+                expect(self.page.locator("[data-save]")).to_be_enabled()
+                self.page.get_by_role("button", name="사진 2 보기", exact=True).click()
+                self.assertTrue(self.page.locator(".receipt-detail-photo img").evaluate("async image => { await image.decode(); return image.naturalWidth > 0; }"))
+                self.page.locator("[data-save]").click()
+                expect(self.page.locator("[data-detail-notice]")).to_have_text("저장했습니다.")
+                expect(self.page.locator("[data-photo-index]")).to_have_count(2)
+                self.page.locator("[data-close]").click()
+                self.page.reload()
+                self.page.locator(f'[data-receipt-id="{record["id"]}"] .receipt-open').click()
+                expect(self.page.locator("[data-photo-index]")).to_have_count(2)
+                self.page.locator("[data-close]").click()
+        self.assertEqual(errors, [])
+
+    def test_receipt_group_lost_response_retry_keeps_one_record(self):
+        before = self.context.request.get(self.origin + "/api/receipts").json()["total"]
+        self.page.goto(self.origin + "/receipt-upload")
+        self.page.locator("#image").set_input_files(self.receipt_photos())
+        self.page.locator("#content").fill("응답 유실 재시도 검증")
+        saved_ids = []
+        def lose_response(route):
+            response = route.fetch()
+            saved_ids.append(response.json()["id"])
+            route.abort("failed")
+        self.page.route("**/api/receipts", lose_response, times=1)
+        self.page.locator("#submit-button").click()
+        expect(self.page.locator("#notice")).to_contain_text("재시도")
+        expect(self.page.locator("#image")).to_be_disabled()
+        self.page.get_by_role("button", name="영수증 다시 등록하기", exact=True).click()
+        expect(self.page.locator("#notice")).to_contain_text("사진 3장이 포함된 영수증 1건")
+        listing = self.context.request.get(self.origin + "/api/receipts").json()
+        self.assertEqual(listing["total"], before + 1)
+        record = next(record for record in listing["items"] if record["id"] == saved_ids[0])
+        self.assertEqual(record["image_count"], 3)
 
     def test_project_meeting_record_and_file_paste(self):
         project = self.context.request.post(self.origin + "/api/projects", data={"name": "이미지 붙여넣기 프로젝트"}).json()

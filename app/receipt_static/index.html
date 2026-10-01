@@ -6,14 +6,14 @@
     <meta name="theme-color" content="#23745c" />
     <title>영수증 등록 · ERP</title>
     <link rel="stylesheet" href="/receipt-static/receipt-upload.css" />
-    <script src="/receipt-static/receipt-upload.js?v=20261001-jpg-upload" type="module"></script>
+    <script src="/receipt-static/receipt-upload.js?v=20261001-group" type="module"></script>
   </head>
   <body>
     <main class="upload-shell">
       <header>
         <p class="eyebrow">ERP</p>
         <h1>영수증 등록</h1>
-        <p class="intro">여러 영수증 사진을 선택해 한 번에 등록하세요.</p>
+        <p class="intro">여러 사진을 하나의 영수증으로 묶어 등록하세요.</p>
       </header>
       <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
       <form id="receipt-form">
@@ -30,8 +30,8 @@
           <div class="date-note"><span>등록일</span><strong>등록하는 시점에 자동으로 기록됩니다</strong></div>
           <label for="content">내용 <span class="required">필수</span></label>
           <textarea id="content" name="content" rows="4" maxlength="4000" placeholder="예: 9월 팀 회의 식비 / 참석자 3명" required></textarea>
-          <p class="hint">등록자와 내용은 모든 사진에 공통으로 적용됩니다. 사진마다 영수증 1건으로 등록됩니다.</p>
-          <p id="retry-hint" class="hint" hidden>재시도할 때는 처음 입력한 등록자와 내용으로 등록됩니다. 다른 정보로 등록하려면 ‘다른 영수증 등록하기’를 눌러 주세요.</p>
+          <p class="hint">선택한 사진은 영수증 1건에 함께 저장됩니다. 등록 후 사진별로 보거나 다운로드할 수 있습니다.</p>
+          <p id="retry-hint" class="hint" hidden>재시도할 때는 처음 선택한 사진과 내용으로 등록됩니다. 사진이나 내용을 바꾸려면 ‘다른 영수증 등록하기’를 눌러 주세요.</p>
           <div id="upload-progress" class="upload-progress" hidden><label for="batch-progress" id="progress-label">등록 준비 중</label><progress id="batch-progress" max="1" value="0" aria-labelledby="progress-label"></progress></div>
           <button id="submit-button" type="submit">영수증 등록하기</button>
         </fieldset>

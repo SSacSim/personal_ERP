@@ -2,6 +2,7 @@ import base64
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -9,6 +10,7 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from app.main import app as erp_app
 from app.receipts import KST, ReceiptStore
@@ -18,6 +20,13 @@ from auth_support import authorize
 
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=")
 GIF = base64.b64decode("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7")
+
+
+def jpeg_photo(**options):
+    output = BytesIO()
+    with Image.new("RGB", (16, 24), "white") as image:
+        image.save(output, format="JPEG", **options)
+    return output.getvalue()
 
 
 class ReceiptTests(unittest.TestCase):
@@ -65,6 +74,61 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual(photo.headers["content-type"], "image/png")
         self.assertEqual(photo.headers["x-content-type-options"], "nosniff")
         self.assertIn("inline", photo.headers["content-disposition"])
+
+    def test_uppercase_jpg_upload_preserves_photos_with_trailing_data(self):
+        for progressive in [False, True]:
+            for trailer in [b"", b"\x00\x00", b"\r\n", b"mobile metadata after JPEG image"]:
+                with self.subTest(progressive=progressive, trailer=trailer):
+                    image = jpeg_photo(progressive=progressive) + trailer
+                    payload = self.payload(filename="Screenshot_20261001.JPG", image_base64=base64.b64encode(image).decode())
+                    response = self.erp.post("/api/receipts", json=payload)
+                    self.assertEqual(response.status_code, 201, response.text)
+                    record = response.json()
+                    self.assertEqual(record["filename"], payload["filename"])
+                    self.assertEqual(record["content_type"], "image/jpeg")
+                    self.assertEqual(record["size"], len(image))
+                    self.assertEqual(self.erp.post("/api/receipts", json=payload).json(), record)
+                    photo = self.erp.get(record["image_url"] + "?download=true")
+                    self.assertEqual(photo.status_code, 200)
+                    self.assertEqual(photo.headers["content-type"], "image/jpeg")
+                    self.assertEqual(photo.content, image)
+
+    def test_replace_photo_accepts_jpeg_with_trailing_metadata(self):
+        original = self.erp.post("/api/receipts", json=self.payload()).json()
+        image = jpeg_photo() + b"mobile metadata after JPEG image"
+        response = self.erp.patch(f"/api/receipts/{original['id']}", json={
+            "content": "휴대폰 스크린샷", "filename": "Screenshot.JPG", "image_base64": base64.b64encode(image).decode(),
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        updated = response.json()
+        self.assertEqual(updated["content_type"], "image/jpeg")
+        self.assertEqual(updated["filename"], "Screenshot.JPG")
+        self.assertEqual(updated["created_at"], original["created_at"])
+        self.assertEqual(self.erp.get(updated["image_url"]).content, image)
+        self.assertFalse((self.root / original["id"] / "image.png").exists())
+
+    def test_invalid_jpeg_cannot_be_created_or_replace_an_existing_photo(self):
+        original = self.erp.post("/api/receipts", json=self.payload()).json()
+        photo = jpeg_photo()
+        # A complete thumbnail must not conceal a truncated primary JPEG.
+        thumbnail = b"Exif\x00\x00" + photo
+        app1 = b"\xff\xe1" + (len(thumbnail) + 2).to_bytes(2, "big") + thumbnail
+        invalid_images = [
+            b"\xff\xd8\xff\xd9", b"\xff\xd8\xffnot a JPEG\xff\xd9",
+            photo[:-12], photo[:2] + app1 + photo[2:-12],
+        ]
+        for image in invalid_images:
+            with self.subTest(image_length=len(image)):
+                encoded = base64.b64encode(image).decode()
+                response = self.erp.post("/api/receipts", json=self.payload(filename="broken.JPG", image_base64=encoded))
+                self.assertEqual(response.status_code, 422, response.text)
+                response = self.erp.patch(f"/api/receipts/{original['id']}", json={
+                    "content": "교체 시도", "filename": "broken.JPG", "image_base64": encoded,
+                })
+                self.assertEqual(response.status_code, 422, response.text)
+                self.assertEqual(self.store.list(0, 24)["items"], [original])
+                self.assertEqual(self.erp.get(original["image_url"]).content, PNG)
+        self.assertEqual(list(self.root.iterdir()), [self.root / original["id"]])
 
     def test_registration_page_and_assets_share_the_erp_origin(self):
         page = self.erp.get("/receipt-upload")

@@ -1,6 +1,7 @@
 const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
 const formatDate = (value) => new Intl.DateTimeFormat("ko-KR", { timeZone: "Asia/Seoul", dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
-const imageUrl = (receipt) => receipt.image_url + (receipt.updated_at ? `?v=${encodeURIComponent(receipt.updated_at)}` : "");
+const receiptPhotos = (receipt) => receipt.images?.length ? receipt.images : [receipt];
+const imageUrl = (photo, receipt = photo) => photo.image_url + (receipt.updated_at ? `?v=${encodeURIComponent(receipt.updated_at)}` : "");
 
 export function mountReceipts(container) {
   const abort = new AbortController();
@@ -14,8 +15,9 @@ export function mountReceipts(container) {
   let selectedId = null;
   let editing = false;
   let busy = false;
-  let replacementPhoto = null;
-  let previewUrl = null;
+  let replacementPhotos = [];
+  let previewUrls = [];
+  let photoIndex = 0;
   let photoReady = true;
 
   container.innerHTML = `
@@ -55,10 +57,53 @@ export function mountReceipts(container) {
   }
 
   function clearReplacement() {
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
-    previewUrl = null;
-    replacementPhoto = null;
+    previewUrls.forEach((url) => URL.revokeObjectURL(url));
+    previewUrls = [];
+    replacementPhotos = [];
     photoReady = true;
+  }
+
+  function galleryPhotos(receipt) {
+    return replacementPhotos.length
+      ? replacementPhotos.map((file, index) => ({ filename: file.name, image_url: previewUrls[index] }))
+      : receiptPhotos(receipt);
+  }
+
+  function renderGallery(receipt) {
+    const photos = galleryPhotos(receipt);
+    const source = (photo) => replacementPhotos.length ? photo.image_url : imageUrl(photo, receipt);
+    photoIndex = 0;
+    detail.querySelector("[data-gallery]").innerHTML = `
+      <figure class="receipt-detail-photo"><img src="${escape(source(photos[0]))}" alt="영수증 사진 1 / ${photos.length}" /></figure>
+      <div class="receipt-gallery-meta">
+        <p><strong data-photo-position>사진 1 / ${photos.length}</strong><span data-photo-filename>${escape(photos[0].filename)}</span></p>
+        <div class="receipt-detail-actions" ${replacementPhotos.length ? "hidden" : ""}>
+          <a class="button-link secondary" data-photo-original href="${escape(photos[0].image_url)}" target="_blank" rel="noopener noreferrer">원본 보기 ↗</a>
+          <a class="button-link secondary" data-photo-download href="${escape(photos[0].image_url)}?download=true" download="${escape(photos[0].filename)}">이 사진 다운로드</a>
+        </div>
+      </div>
+      <div class="receipt-photo-list" role="group" aria-label="첨부 사진 선택" ${photos.length < 2 ? "hidden" : ""}>
+        ${photos.map((photo, index) => `<button class="receipt-photo-choice" type="button" data-photo-index="${index}" aria-label="사진 ${index + 1} 보기" aria-pressed="${index === 0}"><img src="${escape(source(photo))}" alt="" loading="lazy" /><span>${index + 1}</span></button>`).join("")}
+      </div>`;
+  }
+
+  function selectPhoto(receipt, index) {
+    const photos = galleryPhotos(receipt);
+    const photo = photos[index];
+    if (!photo) return;
+    photoIndex = index;
+    const image = detail.querySelector(".receipt-detail-photo img");
+    image.src = replacementPhotos.length ? photo.image_url : imageUrl(photo, receipt);
+    image.alt = `영수증 사진 ${index + 1} / ${photos.length}`;
+    detail.querySelector("[data-photo-position]").textContent = `사진 ${index + 1} / ${photos.length}`;
+    detail.querySelector("[data-photo-filename]").textContent = photo.filename;
+    detail.querySelector("[data-photo-original]").href = photo.image_url;
+    const download = detail.querySelector("[data-photo-download]");
+    download.href = photo.image_url + "?download=true";
+    download.download = photo.filename;
+    detail.querySelectorAll("[data-photo-index]").forEach((button) => {
+      button.setAttribute("aria-pressed", Number(button.dataset.photoIndex) === photoIndex ? "true" : "false");
+    });
   }
 
   function detailMessage(text, error = false) {
@@ -89,29 +134,29 @@ export function mountReceipts(container) {
     editing = edit;
     find("#receipt-detail-title").textContent = edit ? "영수증 수정" : "영수증 상세";
     detail.innerHTML = `
-      <figure class="receipt-detail-photo"><img src="${escape(imageUrl(receipt))}" alt="${escape(receipt.registrant)}님의 영수증 사진" /></figure>
+      <div class="receipt-gallery" data-gallery></div>
       <div class="receipt-detail-info">
         <dl>
           <div><dt>등록자</dt><dd>${escape(receipt.registrant)}</dd></div>
           <div><dt>등록 일시</dt><dd><time datetime="${escape(receipt.created_at)}">${escape(formatDate(receipt.created_at))}</time></dd></div>
           ${edit ? "" : `<div><dt>내용</dt><dd class="receipt-detail-content">${escape(receipt.content) || "—"}</dd></div>`}
-          <div><dt>첨부 파일</dt><dd class="receipt-detail-filename">${escape(receipt.filename)}</dd></div>
+          <div><dt>첨부 사진</dt><dd class="receipt-detail-filename">${receiptPhotos(receipt).length}장 · 사진을 선택해 개별로 보고 다운로드할 수 있습니다.</dd></div>
         </dl>
         ${edit ? `<form data-edit-form class="receipt-edit-form">
           <fieldset>
             <label for="receipt-content">내용</label>
             <textarea id="receipt-content" name="content" rows="6" maxlength="4000" required>${escape(receipt.content)}</textarea>
-            <label for="receipt-photo">사진 교체</label>
-            <input id="receipt-photo" name="photo" type="file" accept=".jpg,.jpeg,.png,.webp,.gif,image/jpeg,image/png,image/webp,image/gif" aria-describedby="receipt-photo-hint" />
-            <p id="receipt-photo-hint" class="receipts-hint">새 사진을 선택하면 기존 사진을 교체합니다. JPG, PNG, WEBP, GIF · 10MB 이하</p>
+            <label for="receipt-photo">사진 전체 교체</label>
+            <input id="receipt-photo" name="photo" type="file" accept=".jpg,.jpeg,.png,.webp,.gif,image/jpeg,image/png,image/webp,image/gif" aria-describedby="receipt-photo-hint" multiple />
+            <p id="receipt-photo-hint" class="receipts-hint">새 사진을 선택하면 기존 사진 전체를 교체합니다. 선택하지 않으면 기존 사진을 유지합니다. 최대 20장 · JPG, PNG, WEBP, GIF · 사진당 10MB</p>
             <div class="receipt-detail-actions"><button type="submit" data-save>변경사항 저장</button><button class="secondary" type="button" data-cancel-edit>취소</button></div>
           </fieldset>
         </form>` : `<div class="receipt-detail-actions">
-          <a class="button-link secondary" href="${escape(receipt.image_url)}" target="_blank" rel="noopener noreferrer">원본 사진 보기 ↗</a>
           <button type="button" data-edit>수정</button><button class="danger-button" type="button" data-delete>삭제</button>
         </div>`}
         <p class="receipt-detail-notice" data-detail-notice role="status" aria-live="polite" hidden></p>
       </div>`;
+    renderGallery(receipt);
     if (!dialog.open) dialog.showModal();
     document.body.classList.add("receipts-modal-open");
     setBusy(busy);
@@ -129,6 +174,7 @@ export function mountReceipts(container) {
     const button = event.target.closest("button");
     const receipt = items.find((item) => item.id === selectedId);
     if (!button || !receipt || busy || disposed) return;
+    if (button.hasAttribute("data-photo-index")) { selectPhoto(receipt, Number(button.dataset.photoIndex)); return; }
     if (button.hasAttribute("data-edit")) { openReceipt(receipt, true); return; }
     if (button.hasAttribute("data-cancel-edit")) { openReceipt(receipt); detail.querySelector("[data-edit]").focus(); return; }
     if (!button.hasAttribute("data-delete") || !window.confirm(`${receipt.registrant}님의 ${formatDate(receipt.created_at)} 영수증을 삭제하시겠습니까?\n사진과 등록 내용이 함께 삭제되며 되돌릴 수 없습니다.`)) return;
@@ -151,31 +197,35 @@ export function mountReceipts(container) {
 
   detail.addEventListener("change", async (event) => {
     if (!event.target.matches("#receipt-photo") || busy || disposed) return;
-    const file = event.target.files[0];
+    const files = [...event.target.files];
     clearReplacement();
     const receipt = items.find((item) => item.id === selectedId);
-    const photo = detail.querySelector(".receipt-detail-photo img");
-    photo.src = imageUrl(receipt);
+    renderGallery(receipt);
     detailMessage("");
-    if (!file) { setBusy(false); return; }
-    if (!/\.(jpe?g|png|webp|gif)$/i.test(file.name) || !file.size || file.size > 10 * 1024 * 1024 || file.name.length > 255) {
+    if (!files.length) { setBusy(false); return; }
+    if (files.length > 20 || files.some((file) => !/\.(jpe?g|png|webp|gif)$/i.test(file.name) || !file.size || file.size > 10 * 1024 * 1024 || file.name.length > 255)) {
       event.target.value = "";
-      detailMessage("파일 이름 255자 이내, 10MB 이하의 JPG, PNG, WEBP, GIF 사진을 선택해 주세요.", true);
+      detailMessage("최대 20장, 파일 이름 255자 이내, 사진당 10MB 이하의 JPG, PNG, WEBP, GIF를 선택해 주세요.", true);
       setBusy(false);
       return;
     }
-    replacementPhoto = file;
+    replacementPhotos = files;
     photoReady = false;
-    const url = previewUrl = URL.createObjectURL(file);
-    photo.src = url;
+    const urls = previewUrls = files.map((file) => URL.createObjectURL(file));
+    renderGallery(receipt);
     setBusy(false);
     try {
-      await photo.decode();
-      if (disposed || previewUrl !== url) return;
+      // Decode one at a time to limit memory use for large phone screenshots.
+      for (const url of urls) {
+        const image = document.createElement("img");
+        image.src = url;
+        try { await image.decode(); } finally { image.removeAttribute("src"); }
+        if (disposed || previewUrls !== urls) return;
+      }
       photoReady = true;
-      detailMessage(`${file.name}: 저장하면 이 사진으로 교체됩니다.`);
+      detailMessage(`저장하면 선택한 사진 ${files.length}장으로 전체 교체됩니다.`);
     } catch {
-      if (disposed || previewUrl !== url) return;
+      if (disposed || previewUrls !== urls) return;
       detailMessage("사진을 열 수 없습니다. 다른 사진을 선택해 주세요.", true);
     }
     setBusy(false);
@@ -190,17 +240,14 @@ export function mountReceipts(container) {
     setBusy(true);
     detailMessage("");
     try {
-      const payload = { content };
-      if (replacementPhoto) {
-        payload.filename = replacementPhoto.name;
-        payload.image_base64 = await new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(String(reader.result).split(",", 2)[1]);
-          reader.onerror = reader.onabort = () => reject(new Error("사진을 읽지 못했습니다. 다시 선택해 주세요."));
-          reader.readAsDataURL(replacementPhoto);
-        });
+      let options = { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content }) };
+      if (replacementPhotos.length) {
+        const body = new FormData();
+        body.append("metadata", JSON.stringify({ content }));
+        replacementPhotos.forEach((file) => body.append("images", file, file.name));
+        options = { method: "PATCH", body };
       }
-      const saved = await mutate(selectedId, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      const saved = await mutate(selectedId, options);
       if (disposed) return;
       items = items.map((item) => item.id === saved.id ? saved : item);
       openReceipt(saved);
@@ -279,11 +326,14 @@ export function mountReceipts(container) {
         find(".receipts-count").textContent = `${total}건`;
         rows.innerHTML = items.map((receipt) => `
           <tr class="receipt-row" data-receipt-id="${escape(receipt.id)}">
-            <td><img class="receipt-thumbnail" src="${escape(imageUrl(receipt))}" alt="" loading="lazy" /></td>
+            <td><img class="receipt-thumbnail" src="${escape(imageUrl(receipt))}" alt="" loading="lazy" /><span class="receipt-photo-count">${receiptPhotos(receipt).length}장</span></td>
             <td class="receipt-registrant">${escape(receipt.registrant)}</td>
             <td class="receipt-date"><time datetime="${escape(receipt.created_at)}">${escape(formatDate(receipt.created_at))}</time></td>
             <td><span class="receipt-summary">${escape(receipt.content) || "—"}</span></td>
-            <td><div class="receipt-row-actions"><a class="button-link secondary receipt-download" href="${escape(receipt.image_url)}?download=true" download="${escape(receipt.filename)}" aria-label="${escape(receipt.registrant)}님의 ${escape(formatDate(receipt.created_at))} 영수증 다운로드">다운로드</a><button class="secondary receipt-open" type="button" aria-haspopup="dialog" aria-controls="receipt-detail" aria-label="${escape(receipt.registrant)}님의 ${escape(formatDate(receipt.created_at))} 영수증 상세 보기">보기</button></div></td>
+            <td><div class="receipt-row-actions">${receiptPhotos(receipt).length === 1
+              ? `<a class="button-link secondary receipt-download" href="${escape(receipt.image_url)}?download=true" download="${escape(receipt.filename)}" aria-label="${escape(receipt.registrant)}님의 ${escape(formatDate(receipt.created_at))} 영수증 다운로드">다운로드</a>`
+              : `<button class="secondary receipt-gallery-open" type="button" aria-haspopup="dialog" aria-controls="receipt-detail" aria-label="첨부 사진 ${receiptPhotos(receipt).length}장 개별 다운로드">다운로드</button>`}
+              <button class="secondary receipt-open" type="button" aria-haspopup="dialog" aria-controls="receipt-detail" aria-label="${escape(receipt.registrant)}님의 ${escape(formatDate(receipt.created_at))} 영수증 상세 보기">보기</button></div></td>
           </tr>`).join("");
         tableWrap.hidden = items.length === 0;
         if (focusedId && !dialog.open) focusReceipt(focusedId, focusedAction);

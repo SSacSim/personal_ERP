@@ -1,4 +1,4 @@
-import { submitReceiptBatch } from "./receipt-batch.js";
+import { submitReceiptBatch } from "./receipt-batch.js?v=20261001-group";
 import { requireSession, setupAccountBar } from "/static/auth-state.js";
 import { clipboardImage, pastedImages } from "/static/remote-work-inputs.js";
 
@@ -23,6 +23,7 @@ const maxPhotos = 20;
 const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
 let entries = [];
 let sending = false;
+let submission = { id: newId() };
 
 // Works on a phone opening the server's LAN address over HTTP, too.
 function newId() {
@@ -48,15 +49,14 @@ function clearPreview() {
 }
 
 function updateControls() {
-  const started = entries.some((entry) => entry.details);
-  const pending = entries.filter((entry) => entry.status !== "saved").length;
+  const started = !!submission.details;
   fields.disabled = sending;
   imageInput.disabled = started;
   registrant.readOnly = true;
   content.readOnly = started;
   retryHint.hidden = !started || sending;
-  submitButton.disabled = sending || !pending || entries.some((entry) => entry.invalid);
-  submitButton.textContent = sending ? "등록 중…" : started ? `남은 ${pending}건 다시 등록하기` : pending ? `영수증 ${pending}건 등록하기` : "영수증 등록하기";
+  submitButton.disabled = sending || !entries.length || entries.some((entry) => entry.invalid);
+  submitButton.textContent = sending ? "등록 중…" : started ? "영수증 다시 등록하기" : entries.length ? `사진 ${entries.length}장으로 영수증 1건 등록하기` : "영수증 등록하기";
   newButton.disabled = sending;
 }
 
@@ -67,15 +67,14 @@ function selectionState(entry) {
 }
 
 function updateSelections() {
-  const saved = entries.filter((entry) => entry.status === "saved").length;
-  selectionCount.textContent = `선택한 사진 ${entries.length}장${saved ? ` · 등록 완료 ${saved}건` : ""}`;
+  selectionCount.textContent = `선택한 사진 ${entries.length}장 · 영수증 1건으로 등록`;
   for (const entry of entries) {
     const card = preview.querySelector(`[data-entry-id="${entry.id}"]`);
     if (!card) continue;
     card.dataset.status = entry.status;
     card.querySelector(".preview-state").textContent = selectionState(entry);
     const remove = card.querySelector("[data-remove]");
-    if (remove) remove.hidden = entry.status === "saved";
+    if (remove) remove.hidden = !!submission.details;
   }
   updateControls();
 }
@@ -95,7 +94,7 @@ function renderSelections() {
 }
 
 function finishBatch(count) {
-  message(`영수증 ${count}건이 등록되었습니다.\nERP의 ‘영수증’ 탭에서 각각 확인할 수 있습니다.`);
+  message(`사진 ${count}장이 포함된 영수증 1건이 등록되었습니다.\nERP의 ‘영수증’ 탭에서 사진별로 보거나 다운로드할 수 있습니다.`);
   form.hidden = true;
   newButton.hidden = false;
   progressArea.hidden = true;
@@ -121,7 +120,7 @@ form.addEventListener("paste", (event) => {
 });
 
 function addPhotos(files) {
-  if (sending || entries.some((entry) => entry.details) || !files.length) return;
+  if (sending || submission.details || !files.length) return;
   const errors = [];
   for (const file of files) {
     // Browsers may report JPEGs as image/jpg or application/octet-stream.
@@ -136,7 +135,7 @@ function addPhotos(files) {
       continue;
     }
     if (entries.length >= maxPhotos) { errors.push(`한 번에 최대 ${maxPhotos}장까지 선택할 수 있습니다.`); break; }
-    entries.push({ id: newId(), file, previewUrl: URL.createObjectURL(file), status: "ready", details: null, invalid: false, error: "" });
+    entries.push({ id: newId(), file, previewUrl: URL.createObjectURL(file), status: "ready", invalid: false, error: "" });
   }
   renderSelections();
   message(errors.join("\n"), errors.length > 0);
@@ -153,42 +152,24 @@ preview.addEventListener("error", (event) => {
 }, true);
 preview.addEventListener("click", (event) => {
   const button = event.target.closest("[data-remove]");
-  if (!button || sending) return;
+  if (!button || sending || submission.details) return;
   const entry = entries.find((entry) => entry.id === button.dataset.remove);
   if (!entry || entry.status === "saved") return;
   URL.revokeObjectURL(entry.previewUrl);
   entries = entries.filter((item) => item !== entry);
-  if (entries.length && entries.every((item) => item.status === "saved")) {
-    finishBatch(entries.length);
-    updateControls();
-    newButton.focus();
-    return;
-  }
   renderSelections();
   message("");
   (preview.querySelector("[data-remove]") || (imageInput.disabled ? newButton : imageInput)).focus();
 });
 
-function readImage(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result).split(",", 2)[1]);
-    reader.onerror = () => reject(new Error("사진을 읽지 못했습니다. 다시 선택해 주세요."));
-    reader.onabort = () => reject(new Error("사진 읽기가 취소되었습니다."));
-    reader.readAsDataURL(file);
-  });
-}
-
-async function uploadReceipt(entry) {
+async function uploadReceipt(body) {
   const abort = new AbortController();
-  const timeout = setTimeout(() => abort.abort(), 60000);
+  const timeout = setTimeout(() => abort.abort(), 300000);
   try {
-    const imageBase64 = await readImage(entry.file);
     const response = await fetch("/api/receipts", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       signal: abort.signal,
-      body: JSON.stringify({ submission_id: entry.id, ...entry.details, filename: entry.file.name, image_base64: imageBase64 }),
+      body,
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : "등록하지 못했습니다. 잠시 후 다시 시도해 주세요.");
@@ -208,25 +189,19 @@ form.addEventListener("submit", async (event) => {
   sending = true;
   newButton.hidden = true;
   progressArea.hidden = false;
+  progress.removeAttribute("value");
+  progressLabel.textContent = `사진 ${entries.length}장을 영수증 1건으로 등록 중`;
+  entries.forEach((entry) => { entry.status = "sending"; entry.error = ""; });
   message("");
-  updateControls();
+  updateSelections();
   try {
-    const result = await submitReceiptBatch(entries, { registrant: name, content: text }, uploadReceipt, ({ current, total, processed }) => {
-      progress.max = total;
-      progress.value = processed;
-      progressLabel.textContent = `영수증 등록 중 ${current} / ${total}건`;
-      updateSelections();
-    });
-    if (!result.failed) {
-      finishBatch(result.saved);
-    } else {
-      message(`${result.saved}건 등록 완료 · ${result.failed}건 등록 실패\n사진별 실패 이유를 확인한 뒤 ‘남은 ${result.failed}건 다시 등록하기’를 눌러 주세요. 완료된 영수증은 중복 등록되지 않습니다.`, true);
-      progressArea.hidden = true;
-      newButton.hidden = false;
-      updateSelections();
-    }
+    await submitReceiptBatch(entries, { registrant: name, content: text }, submission, uploadReceipt);
+    finishBatch(entries.length);
   } catch (error) {
-    message(error.message || "등록을 마치지 못했습니다. 남은 영수증을 다시 등록해 주세요.", true);
+    const reason = error.name === "AbortError" ? "응답이 지연되었습니다. 다시 등록하면 저장 여부를 확인합니다." : error.message || "서버에 연결하지 못했습니다.";
+    message(`${reason}\n‘영수증 다시 등록하기’를 눌러 재시도해 주세요. 같은 영수증은 중복 등록되지 않습니다.`, true);
+    entries.forEach((entry) => { entry.status = "error"; entry.error = "등록 재시도 대기"; });
+    updateSelections();
     newButton.hidden = false;
     progressArea.hidden = true;
   } finally {
@@ -241,6 +216,7 @@ newButton.addEventListener("click", () => {
   if (sending) return;
   imageInput.value = "";
   content.value = "";
+  submission = { id: newId() };
   clearPreview();
   message("");
   form.hidden = false;
