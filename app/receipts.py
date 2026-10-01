@@ -6,13 +6,15 @@ import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from uuid import UUID
+from threading import RLock
+from uuid import UUID, uuid4
 
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_CONTENT_LENGTH = 4000
 KST = timezone(timedelta(hours=9))
 logger = logging.getLogger(__name__)
+_mutation_lock = RLock()
 
 
 def image_format(content: bytes) -> tuple[str, str]:
@@ -45,9 +47,10 @@ class ReceiptStore:
         except (ValueError, AttributeError):
             return None
         record = self.root / normalized / "receipt.json"
-        if not record.is_file():
+        try:
+            return json.loads(record.read_text(encoding="utf-8"))
+        except FileNotFoundError:
             return None
-        return json.loads(record.read_text(encoding="utf-8"))
 
     @staticmethod
     def public(record: dict) -> dict:
@@ -98,6 +101,66 @@ class ReceiptStore:
                     return existing
                 raise
         return self.public(record)
+
+    def update(self, receipt_id: str, content: str, filename: str | None = None,
+               image: bytes | None = None) -> dict | None:
+        with _mutation_lock:
+            record = self.get(receipt_id)
+            if record is None:
+                return None
+            folder = (self.root / UUID(receipt_id).hex).resolve()
+            if folder.parent != self.root.resolve():
+                return None
+            updated = {**record, "content": content, "updated_at": datetime.now(KST).isoformat(timespec="microseconds")}
+            image_path = None
+            if image is not None:
+                extension, content_type = image_format(image)
+                image_path = folder / f"image-{uuid4().hex}{extension}"
+                updated.update({
+                    "filename": (filename or "").replace("\\", "/").rsplit("/", 1)[-1][:180] or f"영수증{extension}",
+                    "content_type": content_type, "size": len(image), "image_file": image_path.name,
+                    "image_sha256": hashlib.sha256(image).hexdigest(),
+                })
+            # Publish metadata only after the replacement image is fully written.
+            # A failed write leaves the previous record and image available.
+            committed = False
+            try:
+                with TemporaryDirectory(prefix=".update-", dir=folder) as temporary:
+                    staged = Path(temporary)
+                    if image_path is not None:
+                        (staged / image_path.name).write_bytes(image)
+                        (staged / image_path.name).replace(image_path)
+                    metadata = staged / "receipt.json"
+                    metadata.write_text(json.dumps(updated, ensure_ascii=False, indent=2), encoding="utf-8")
+                    metadata.replace(folder / "receipt.json")
+                    committed = True
+            except OSError:
+                if committed:
+                    logger.warning("Could not clean up receipt update staging files %s", receipt_id)
+                else:
+                    if image_path is not None:
+                        image_path.unlink(missing_ok=True)
+                    raise
+            if image_path is not None:
+                old_image = (folder / record["image_file"]).resolve()
+                if old_image.parent == folder:
+                    try:
+                        old_image.unlink(missing_ok=True)
+                    except OSError:
+                        logger.warning("Could not remove replaced receipt image %s", receipt_id)
+            return self.public(updated)
+
+    def delete(self, receipt_id: str) -> bool:
+        with _mutation_lock:
+            if self.get(receipt_id) is None:
+                return False
+            folder = (self.root / UUID(receipt_id).hex).resolve()
+            if folder.parent != self.root.resolve():
+                return False
+            # Remove the record from listings atomically, then remove its files.
+            with TemporaryDirectory(prefix=".deleted-", dir=self.root) as temporary:
+                folder.rename(Path(temporary) / folder.name)
+            return True
 
     def list(self, offset: int, limit: int) -> dict:
         records = []

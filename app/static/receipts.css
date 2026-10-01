@@ -44,6 +44,15 @@ body.receipts-modal-open { overflow: hidden; }
 .receipt-detail-content { white-space: pre-wrap; }
 .receipt-detail-info .receipt-detail-filename { color: var(--muted); font-size: 12px; }
 .receipt-detail-info .button-link { font-size: 12px; }
+.receipt-detail-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.receipt-detail-actions button { font-size: 12px; }
+.receipt-edit-form fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+.receipt-edit-form label { display: block; margin: 18px 0 8px; font-size: 13px; font-weight: 600; }
+.receipt-edit-form textarea, .receipt-edit-form input { width: 100%; min-width: 0; }
+.receipt-edit-form textarea { resize: vertical; }
+.receipt-edit-form .receipts-hint { margin: 8px 0 18px; line-height: 1.6; }
+.receipt-detail-notice { margin: 16px 0 0; color: var(--accent); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.receipt-detail-notice.error { color: var(--danger); }
 @media (max-width: 760px) {
   .receipts-heading { align-items: flex-start; flex-direction: column; }
   .receipts-actions { width: 100%; }
@@ -52,4 +61,5 @@ body.receipts-modal-open { overflow: hidden; }
   .receipt-dialog-body { grid-template-columns: minmax(0, 1fr); }
   .receipt-detail-photo, .receipt-detail-info { padding: 20px; }
   .receipt-detail-photo img { max-height: 45dvh; }
+  .receipt-edit-form textarea, .receipt-edit-form input { font-size: 16px; }
 }

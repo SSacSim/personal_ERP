@@ -1,5 +1,5 @@
 import { mountTeamChat } from "./team-chat.js?v=20260929-image-paste";
-import { mountReceipts } from "./receipts.js";
+import { mountReceipts } from "./receipts.js?v=20261001-edit";
 import { mountIdInfo } from "./id-info.js?v=20260928-info-lock";
 import { mountPomodoro, mountPomodoroIndicator } from "./pomodoro.js";
 import { mountRemoteWork } from "./remote-work.js";

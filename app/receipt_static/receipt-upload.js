@@ -19,7 +19,6 @@ const retryHint = document.querySelector("#retry-hint");
 const progressArea = document.querySelector("#upload-progress");
 const progress = document.querySelector("#batch-progress");
 const progressLabel = document.querySelector("#progress-label");
-const allowedTypes = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
 const maxPhotos = 20;
 const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
 let entries = [];
@@ -125,7 +124,9 @@ function addPhotos(files) {
   if (sending || entries.some((entry) => entry.details) || !files.length) return;
   const errors = [];
   for (const file of files) {
-    if ((file.type && !allowedTypes.has(file.type)) || !/\.(jpe?g|png|webp|gif)$/i.test(file.name) || file.size === 0 || file.size > 10 * 1024 * 1024) {
+    // Browsers may report JPEGs as image/jpg or application/octet-stream.
+    // Check the extension here; preview decoding and the server check the image bytes.
+    if (!/\.(jpe?g|png|webp|gif)$/i.test(file.name) || file.size === 0 || file.size > 10 * 1024 * 1024) {
       errors.push(`${file.name}: 10MB 이하의 JPG, PNG, WEBP, GIF 사진을 선택해 주세요.`);
       continue;
     }

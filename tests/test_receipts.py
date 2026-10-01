@@ -17,6 +17,7 @@ from auth_support import authorize
 
 
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=")
+GIF = base64.b64decode("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7")
 
 
 class ReceiptTests(unittest.TestCase):
@@ -146,6 +147,92 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual(self.erp.get("/api/receipts/not-an-id/image").status_code, 404)
         self.assertEqual(self.erp.get(f"/api/receipts/{uuid4().hex}/image").status_code, 404)
         self.assertEqual(self.erp.get(record["image_url"]).content, PNG)
+
+    def test_edit_content_preserves_identity_date_and_image_after_reload(self):
+        original = self.erp.post("/api/receipts", json=self.payload()).json()
+        before = datetime.now(KST)
+        response = self.erp.patch(f"/api/receipts/{original['id']}", json={"content": "  수정한 식비\n참석자 4명  "})
+        self.assertEqual(response.status_code, 200, response.text)
+        updated = response.json()
+        self.assertEqual(updated["content"], "수정한 식비\n참석자 4명")
+        self.assertGreaterEqual(datetime.fromisoformat(updated["updated_at"]), before)
+        for key in ["id", "registrant", "created_at", "date", "filename", "image_url", "size"]:
+            self.assertEqual(updated[key], original[key])
+        self.assertNotIn("image_file", updated)
+        self.assertNotIn("image_sha256", updated)
+        self.assertEqual(ReceiptStore(self.root).list(0, 24)["items"], [updated])
+        self.assertEqual(self.erp.get(updated["image_url"]).content, PNG)
+
+    def test_replace_photo_updates_original_and_removes_previous_file(self):
+        original = self.erp.post("/api/receipts", json=self.payload()).json()
+        response = self.erp.patch(f"/api/receipts/{original['id']}", json={
+            "content": "사진 교체", "filename": "../교체.GIF", "image_base64": base64.b64encode(GIF).decode(),
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        updated = response.json()
+        self.assertEqual(updated["filename"], "교체.GIF")
+        self.assertEqual(updated["content_type"], "image/gif")
+        self.assertEqual(updated["size"], len(GIF))
+        self.assertEqual(updated["created_at"], original["created_at"])
+        photo = self.erp.get(updated["image_url"] + "?download=true")
+        self.assertEqual(photo.content, GIF)
+        self.assertEqual(photo.headers["content-type"], "image/gif")
+        self.assertIn("attachment", photo.headers["content-disposition"])
+        folder = self.root / updated["id"]
+        self.assertFalse((folder / "image.png").exists())
+        self.assertEqual(len(list(folder.iterdir())), 2)
+
+    def test_invalid_edits_leave_existing_receipt_unchanged(self):
+        original = self.erp.post("/api/receipts", json=self.payload()).json()
+        url = f"/api/receipts/{original['id']}"
+        for changes in [
+            {}, {"content": " "}, {"content": "x" * 4001},
+            {"content": "수정", "registrant": "다른 사람"}, {"content": "수정", "created_at": "2000-01-01"},
+            {"content": "수정", "filename": "photo.JPG"}, {"content": "수정", "image_base64": "AAAA"},
+            {"content": "수정", "filename": "photo.JPG", "image_base64": "@@@"},
+            {"content": "수정", "filename": "photo.JPG", "image_base64": base64.b64encode(b"not an image").decode()},
+        ]:
+            with self.subTest(changes=changes):
+                self.assertEqual(self.erp.patch(url, json=changes).status_code, 422)
+                self.assertEqual(self.store.list(0, 24)["items"], [original])
+        with patch.object(receipts, "MAX_REQUEST_BYTES", 8):
+            self.assertEqual(self.erp.patch(url, json={"content": "too long"}).status_code, 413)
+        self.assertEqual(self.erp.patch(url, content="not-json").status_code, 415)
+        self.assertEqual(self.erp.get(original["image_url"]).content, PNG)
+
+    def test_failed_edit_keeps_original_metadata_and_photo(self):
+        original = self.erp.post("/api/receipts", json=self.payload()).json()
+        for method in ["write_bytes", "write_text", "replace"]:
+            with self.subTest(method=method), patch.object(Path, method, side_effect=OSError("disk full")):
+                with self.assertRaises(OSError):
+                    self.store.update(original["id"], "수정", "new.GIF", GIF)
+            self.assertEqual(self.store.list(0, 24)["items"], [original])
+            self.assertEqual(self.erp.get(original["image_url"]).content, PNG)
+            self.assertEqual(len(list((self.root / original["id"]).iterdir())), 2)
+
+    def test_delete_removes_receipt_and_photo_without_touching_other_receipts(self):
+        deleted = self.erp.post("/api/receipts", json=self.payload()).json()
+        kept = self.erp.post("/api/receipts", json=self.payload(content="유지")).json()
+        response = self.erp.delete(f"/api/receipts/{deleted['id']}")
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(response.content, b"")
+        self.assertFalse((self.root / deleted["id"]).exists())
+        self.assertEqual(ReceiptStore(self.root).list(0, 24)["items"], [kept])
+        self.assertEqual(self.erp.get(deleted["image_url"]).status_code, 404)
+        self.assertEqual(self.erp.get(kept["image_url"]).content, PNG)
+        self.assertEqual(self.erp.delete(f"/api/receipts/{deleted['id']}").status_code, 404)
+
+    def test_edit_and_delete_require_login_and_valid_existing_id(self):
+        original = self.erp.post("/api/receipts", json=self.payload()).json()
+        for receipt_id in ["not-an-id", uuid4().hex]:
+            self.assertEqual(self.erp.patch(f"/api/receipts/{receipt_id}", json={"content": "수정"}).status_code, 404)
+            self.assertEqual(self.erp.delete(f"/api/receipts/{receipt_id}").status_code, 404)
+        self.assertIsNone(self.store.update("../outside", "수정"))
+        self.assertFalse(self.store.delete("../outside"))
+        self.erp.cookies.clear()
+        self.assertEqual(self.erp.patch(f"/api/receipts/{original['id']}", json={"content": "수정"}).status_code, 401)
+        self.assertEqual(self.erp.delete(f"/api/receipts/{original['id']}").status_code, 401)
+        self.assertEqual(self.store.list(0, 24)["items"], [original])
 
 
 if __name__ == "__main__":

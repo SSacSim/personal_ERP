@@ -1,5 +1,6 @@
 const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
 const formatDate = (value) => new Intl.DateTimeFormat("ko-KR", { timeZone: "Asia/Seoul", dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
+const imageUrl = (receipt) => receipt.image_url + (receipt.updated_at ? `?v=${encodeURIComponent(receipt.updated_at)}` : "");
 
 export function mountReceipts(container) {
   const abort = new AbortController();
@@ -11,6 +12,11 @@ export function mountReceipts(container) {
   let lastResult = "";
   let items = [];
   let selectedId = null;
+  let editing = false;
+  let busy = false;
+  let replacementPhoto = null;
+  let previewUrl = null;
+  let photoReady = true;
 
   container.innerHTML = `
     <section class="receipts-page">
@@ -27,7 +33,7 @@ export function mountReceipts(container) {
         </table>
       </div>
       <div class="receipts-pagination" hidden><button class="secondary" data-prev type="button">이전</button><span data-page></span><button class="secondary" data-next type="button">다음</button></div>
-      <p class="receipts-hint">영수증을 누르면 사진과 상세 정보를 볼 수 있습니다. 최신 목록은 10초마다 갱신됩니다.</p>
+      <p class="receipts-hint">영수증을 누르면 상세 조회·수정·삭제할 수 있습니다. 최신 목록은 10초마다 갱신됩니다.</p>
       <dialog class="receipt-dialog" id="receipt-detail" aria-labelledby="receipt-detail-title">
         <header class="receipt-dialog-header"><h2 id="receipt-detail-title">영수증 상세</h2><button class="secondary receipt-dialog-close" type="button" data-close aria-label="영수증 상세 닫기" autofocus>닫기</button></header>
         <div class="receipt-dialog-body" data-detail></div>
@@ -48,33 +54,181 @@ export function mountReceipts(container) {
     (row?.querySelector(selector) || refresh).focus({ preventScroll: true });
   }
 
-  function openReceipt(receipt) {
+  function clearReplacement() {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    previewUrl = null;
+    replacementPhoto = null;
+    photoReady = true;
+  }
+
+  function detailMessage(text, error = false) {
+    const notice = detail.querySelector("[data-detail-notice]");
+    if (!notice) return;
+    notice.textContent = text;
+    notice.hidden = !text;
+    notice.classList.toggle("error", error);
+  }
+
+  function setBusy(value) {
+    busy = value;
+    find("[data-close]").disabled = busy;
+    const fields = detail.querySelector("fieldset");
+    if (fields) fields.disabled = busy;
+    detail.querySelectorAll("[data-edit], [data-delete]").forEach((button) => { button.disabled = busy; });
+    const save = detail.querySelector("[data-save]");
+    if (save) {
+      save.disabled = busy || !photoReady;
+      save.textContent = busy ? "저장 중…" : "변경사항 저장";
+    }
+    buttons();
+  }
+
+  function openReceipt(receipt, edit = false) {
+    clearReplacement();
     selectedId = receipt.id;
+    editing = edit;
+    find("#receipt-detail-title").textContent = edit ? "영수증 수정" : "영수증 상세";
     detail.innerHTML = `
-      <figure class="receipt-detail-photo"><img src="${escape(receipt.image_url)}" alt="${escape(receipt.registrant)}님의 영수증 사진" /></figure>
+      <figure class="receipt-detail-photo"><img src="${escape(imageUrl(receipt))}" alt="${escape(receipt.registrant)}님의 영수증 사진" /></figure>
       <div class="receipt-detail-info">
         <dl>
           <div><dt>등록자</dt><dd>${escape(receipt.registrant)}</dd></div>
           <div><dt>등록 일시</dt><dd><time datetime="${escape(receipt.created_at)}">${escape(formatDate(receipt.created_at))}</time></dd></div>
-          <div><dt>내용</dt><dd class="receipt-detail-content">${escape(receipt.content) || "—"}</dd></div>
+          ${edit ? "" : `<div><dt>내용</dt><dd class="receipt-detail-content">${escape(receipt.content) || "—"}</dd></div>`}
           <div><dt>첨부 파일</dt><dd class="receipt-detail-filename">${escape(receipt.filename)}</dd></div>
         </dl>
-        <a class="button-link secondary" href="${escape(receipt.image_url)}" target="_blank" rel="noopener noreferrer">원본 사진 보기 ↗</a>
+        ${edit ? `<form data-edit-form class="receipt-edit-form">
+          <fieldset>
+            <label for="receipt-content">내용</label>
+            <textarea id="receipt-content" name="content" rows="6" maxlength="4000" required>${escape(receipt.content)}</textarea>
+            <label for="receipt-photo">사진 교체</label>
+            <input id="receipt-photo" name="photo" type="file" accept=".jpg,.jpeg,.png,.webp,.gif,image/jpeg,image/png,image/webp,image/gif" aria-describedby="receipt-photo-hint" />
+            <p id="receipt-photo-hint" class="receipts-hint">새 사진을 선택하면 기존 사진을 교체합니다. JPG, PNG, WEBP, GIF · 10MB 이하</p>
+            <div class="receipt-detail-actions"><button type="submit" data-save>변경사항 저장</button><button class="secondary" type="button" data-cancel-edit>취소</button></div>
+          </fieldset>
+        </form>` : `<div class="receipt-detail-actions">
+          <a class="button-link secondary" href="${escape(receipt.image_url)}" target="_blank" rel="noopener noreferrer">원본 사진 보기 ↗</a>
+          <button type="button" data-edit>수정</button><button class="danger-button" type="button" data-delete>삭제</button>
+        </div>`}
+        <p class="receipt-detail-notice" data-detail-notice role="status" aria-live="polite" hidden></p>
       </div>`;
-    dialog.showModal();
+    if (!dialog.open) dialog.showModal();
     document.body.classList.add("receipts-modal-open");
+    setBusy(busy);
+    if (edit) detail.querySelector("textarea").focus();
   }
+
+  async function mutate(receiptId, options) {
+    const response = await fetch(`/api/receipts/${encodeURIComponent(receiptId)}`, { ...options, signal: abort.signal });
+    const data = response.status === 204 ? null : await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(typeof data?.detail === "string" ? data.detail : "처리하지 못했습니다. 잠시 후 다시 시도해 주세요.");
+    return data;
+  }
+
+  detail.addEventListener("click", async (event) => {
+    const button = event.target.closest("button");
+    const receipt = items.find((item) => item.id === selectedId);
+    if (!button || !receipt || busy || disposed) return;
+    if (button.hasAttribute("data-edit")) { openReceipt(receipt, true); return; }
+    if (button.hasAttribute("data-cancel-edit")) { openReceipt(receipt); detail.querySelector("[data-edit]").focus(); return; }
+    if (!button.hasAttribute("data-delete") || !window.confirm(`${receipt.registrant}님의 ${formatDate(receipt.created_at)} 영수증을 삭제하시겠습니까?\n사진과 등록 내용이 함께 삭제되며 되돌릴 수 없습니다.`)) return;
+    setBusy(true);
+    detailMessage("삭제 중…");
+    try {
+      await mutate(receipt.id, { method: "DELETE" });
+      if (disposed) return;
+      dialog.close();
+      await load();
+    } catch (error) {
+      if (!disposed) detailMessage(error.message || "삭제하지 못했습니다. 다시 시도해 주세요.", true);
+    } finally {
+      if (!disposed) {
+        setBusy(false);
+        if (!dialog.open) refresh.focus();
+      }
+    }
+  });
+
+  detail.addEventListener("change", async (event) => {
+    if (!event.target.matches("#receipt-photo") || busy || disposed) return;
+    const file = event.target.files[0];
+    clearReplacement();
+    const receipt = items.find((item) => item.id === selectedId);
+    const photo = detail.querySelector(".receipt-detail-photo img");
+    photo.src = imageUrl(receipt);
+    detailMessage("");
+    if (!file) { setBusy(false); return; }
+    if (!/\.(jpe?g|png|webp|gif)$/i.test(file.name) || !file.size || file.size > 10 * 1024 * 1024 || file.name.length > 255) {
+      event.target.value = "";
+      detailMessage("파일 이름 255자 이내, 10MB 이하의 JPG, PNG, WEBP, GIF 사진을 선택해 주세요.", true);
+      setBusy(false);
+      return;
+    }
+    replacementPhoto = file;
+    photoReady = false;
+    const url = previewUrl = URL.createObjectURL(file);
+    photo.src = url;
+    setBusy(false);
+    try {
+      await photo.decode();
+      if (disposed || previewUrl !== url) return;
+      photoReady = true;
+      detailMessage(`${file.name}: 저장하면 이 사진으로 교체됩니다.`);
+    } catch {
+      if (disposed || previewUrl !== url) return;
+      detailMessage("사진을 열 수 없습니다. 다른 사진을 선택해 주세요.", true);
+    }
+    setBusy(false);
+  });
+
+  detail.addEventListener("submit", async (event) => {
+    if (!event.target.matches("[data-edit-form]")) return;
+    event.preventDefault();
+    if (busy || disposed || !editing || !photoReady || !event.target.reportValidity()) return;
+    const content = event.target.elements.content.value.trim();
+    if (!content) { detailMessage("내용을 입력해 주세요.", true); return; }
+    setBusy(true);
+    detailMessage("");
+    try {
+      const payload = { content };
+      if (replacementPhoto) {
+        payload.filename = replacementPhoto.name;
+        payload.image_base64 = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result).split(",", 2)[1]);
+          reader.onerror = reader.onabort = () => reject(new Error("사진을 읽지 못했습니다. 다시 선택해 주세요."));
+          reader.readAsDataURL(replacementPhoto);
+        });
+      }
+      const saved = await mutate(selectedId, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      if (disposed) return;
+      items = items.map((item) => item.id === saved.id ? saved : item);
+      openReceipt(saved);
+      detailMessage("저장했습니다.");
+      await load();
+    } catch (error) {
+      if (!disposed) detailMessage(error.message || "저장하지 못했습니다. 다시 시도해 주세요.", true);
+    } finally {
+      if (!disposed) {
+        setBusy(false);
+        if (!editing && dialog.open) detail.querySelector("[data-edit]")?.focus();
+      }
+    }
+  });
 
   rows.addEventListener("click", (event) => {
     if (event.target.closest(".receipt-download")) return;
     const row = event.target.closest("[data-receipt-id]");
     const receipt = row && items.find((item) => item.id === row.dataset.receiptId);
-    if (!receipt || disposed) return;
+    if (!receipt || disposed || busy || loading) return;
     row.querySelector("button").focus({ preventScroll: true });
     openReceipt(receipt);
   });
-  find("[data-close]").addEventListener("click", () => dialog.close());
+  find("[data-close]").addEventListener("click", () => { if (!busy) dialog.close(); });
+  dialog.addEventListener("cancel", (event) => { if (busy) event.preventDefault(); });
   dialog.addEventListener("close", () => {
+    clearReplacement();
+    editing = false;
     document.body.classList.remove("receipts-modal-open");
     detail.textContent = "";
     if (!disposed) focusReceipt(selectedId);
@@ -90,14 +244,14 @@ export function mountReceipts(container) {
   let backdropPressed = false;
   dialog.addEventListener("pointerdown", (event) => { backdropPressed = event.target === dialog && outsideDialog(event); });
   dialog.addEventListener("click", (event) => {
-    if (backdropPressed && event.target === dialog && outsideDialog(event)) dialog.close();
+    if (!busy && backdropPressed && event.target === dialog && outsideDialog(event)) dialog.close();
     backdropPressed = false;
   });
 
   function buttons() {
-    prev.disabled = loading || offset === 0;
-    next.disabled = loading || offset + pageSize >= total;
-    refresh.disabled = loading;
+    prev.disabled = busy || loading || offset === 0;
+    next.disabled = busy || loading || offset + pageSize >= total;
+    refresh.disabled = busy || loading;
   }
 
   async function load() {
@@ -110,6 +264,11 @@ export function mountReceipts(container) {
       const data = await response.json();
       if (disposed) return;
       total = data.total;
+      if (offset > 0 && offset >= total) {
+        offset = Math.max(0, Math.ceil(total / pageSize) - 1) * pageSize;
+        loading = false;
+        return await load();
+      }
       const key = JSON.stringify(data);
       if (key !== lastResult) {
         const focusedRow = document.activeElement?.closest("[data-receipt-id]");
@@ -120,7 +279,7 @@ export function mountReceipts(container) {
         find(".receipts-count").textContent = `${total}건`;
         rows.innerHTML = items.map((receipt) => `
           <tr class="receipt-row" data-receipt-id="${escape(receipt.id)}">
-            <td><img class="receipt-thumbnail" src="${escape(receipt.image_url)}" alt="" loading="lazy" /></td>
+            <td><img class="receipt-thumbnail" src="${escape(imageUrl(receipt))}" alt="" loading="lazy" /></td>
             <td class="receipt-registrant">${escape(receipt.registrant)}</td>
             <td class="receipt-date"><time datetime="${escape(receipt.created_at)}">${escape(formatDate(receipt.created_at))}</time></td>
             <td><span class="receipt-summary">${escape(receipt.content) || "—"}</span></td>
@@ -154,6 +313,7 @@ export function mountReceipts(container) {
     disposed = true;
     clearInterval(timer);
     abort.abort();
+    clearReplacement();
     if (dialog.open) dialog.close();
     document.body.classList.remove("receipts-modal-open");
     items = [];

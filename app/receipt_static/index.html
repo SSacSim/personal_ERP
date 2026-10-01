@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#23745c" />
     <title>영수증 등록 · ERP</title>
     <link rel="stylesheet" href="/receipt-static/receipt-upload.css" />
-    <script src="/receipt-static/receipt-upload.js?v=20260929-image-paste" type="module"></script>
+    <script src="/receipt-static/receipt-upload.js?v=20261001-jpg-upload" type="module"></script>
   </head>
   <body>
     <main class="upload-shell">
@@ -20,7 +20,7 @@
         <fieldset id="receipt-fields">
           <label for="image">영수증 사진 <span class="required">필수</span></label>
           <div class="photo-field">
-            <input id="image" name="image" type="file" accept="image/jpeg,image/png,image/webp,image/gif" aria-describedby="image-hint" multiple />
+            <input id="image" name="image" type="file" accept=".jpg,.jpeg,.png,.webp,.gif,image/jpeg,image/png,image/webp,image/gif" aria-describedby="image-hint" multiple />
             <p id="image-hint" class="hint">최대 20장 · JPG, PNG, WEBP, GIF · 사진당 10MB<br />사진을 추가로 선택하거나 등록 전 목록에서 제외할 수 있습니다.</p>
             <p id="selection-count" class="selection-count" aria-live="polite">선택한 사진 0장</p>
             <div id="preview" class="preview-list" aria-label="선택한 영수증 사진" hidden></div>
