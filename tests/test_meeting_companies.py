@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from app import storage
 from app.companies import CompanyStore
-from app.routers import companies, meetings
+from app.routers import companies, meetings, projects
 
 
 class MeetingCompanyTests(unittest.TestCase):
@@ -22,9 +22,11 @@ class MeetingCompanyTests(unittest.TestCase):
         self.vault = storage.ObsidianVault(self.root)
         self.stack.enter_context(patch.object(companies, "vault", self.vault))
         self.stack.enter_context(patch.object(meetings, "vault", self.vault))
+        self.stack.enter_context(patch.object(projects, "vault", self.vault))
         app = FastAPI()
         app.include_router(companies.router)
         app.include_router(meetings.router)
+        app.include_router(projects.router)
         self.client = self.stack.enter_context(TestClient(app))
 
     def company(self, name="한빛 주식회사"):
@@ -41,6 +43,109 @@ class MeetingCompanyTests(unittest.TestCase):
         })
         self.assertEqual(response.status_code, 201, response.text)
         return response.json()
+
+    def project(self, company_name="한빛 주식회사"):
+        response = self.client.post("/api/projects", json={"name": "도입 프로젝트", "company_name": company_name})
+        self.assertEqual(response.status_code, 201, response.text)
+        return response.json()
+
+    def test_project_meetings_automatically_register_and_share_the_project_company(self):
+        project = self.project()
+        first = self.meeting(project_id=project["id"])
+        second = self.meeting(project_id=project["id"], company_id="")
+        self.assertTrue(first["company_id"])
+        self.assertEqual(first["company_id"], second["company_id"])
+        self.assertEqual(first["company_name"], project["company_name"])
+        self.assertEqual(self.client.get("/api/companies").json()["items"], [{"id": first["company_id"], "name": project["company_name"]}])
+        project_items = self.client.get("/api/meetings", params={"project_id": project["id"]}).json()["items"]
+        company_items = self.client.get("/api/meetings", params={"company_id": first["company_id"]}).json()["items"]
+        all_items = self.client.get("/api/meetings").json()["items"]
+        self.assertEqual(project_items, company_items)
+        self.assertEqual(company_items, all_items)
+        self.assertEqual(len(list((self.root / "Meetings").glob("*.md"))), 2)
+        reopened = storage.ObsidianVault(self.root)
+        self.assertEqual(reopened.list_meetings(company_id=first["company_id"]), all_items)
+
+    def test_project_company_reuses_normalized_registry_names_and_honors_explicit_selection(self):
+        company = self.company("ACME Korea")
+        project = self.project(" ＡＣＭＥ   korea ")
+        original = self.meeting(project_id=project["id"])
+        self.assertEqual(original["company_id"], company["id"])
+        self.assertEqual(original["company_name"], company["name"])
+        other = self.company("다른 회사")
+        selected = self.meeting(project_id=project["id"], company_id=other["id"])
+        self.assertEqual(selected["company_id"], other["id"])
+        restored = self.client.patch(f"/api/meetings/{selected['id']}", json={"company_id": ""}).json()
+        self.assertEqual(restored["company_id"], company["id"])
+        self.assertEqual(len(self.client.get("/api/companies").json()["items"]), 2)
+
+    def test_shared_project_meeting_edits_and_deletion_use_one_document(self):
+        project = self.project()
+        original = self.meeting(project_id=project["id"])
+        url = f"/api/meetings/{original['id']}"
+        # The standalone editor omits project_id; retain the project connection.
+        updated = self.client.patch(url, json={"title": "공통 회의록에서 수정", "notes": "수정 본문", "company_id": original["company_id"]}).json()
+        for key in ["id", "path", "created_at", "project_id", "company_id", "images"]:
+            self.assertEqual(updated[key], original[key])
+        self.assertEqual(self.vault.list_meetings(project_id=project["id"]), [updated])
+        from_project = self.client.patch(url, json={"project_id": project["id"], "company_id": "", "agenda": "프로젝트에서 수정"}).json()
+        self.assertEqual(self.vault.list_meetings(company_id=original["company_id"]), [from_project])
+        self.assertEqual(len(list((self.root / "Meetings").glob("*.md"))), 1)
+        self.assertEqual(self.client.delete(url).status_code, 200)
+        self.assertEqual(self.vault.list_meetings(project_id=project["id"]), [])
+        self.assertEqual(self.vault.list_meetings(company_id=original["company_id"]), [])
+
+    def test_legacy_project_company_migration_preserves_document_and_runs_once(self):
+        project = self.project()
+        original = self.meeting()
+        note = self.vault.find_by_id("meeting", original["id"])
+        note.metadata["project_id"] = project["id"]
+        note.metadata.pop("company_id")
+        note.metadata.pop("company_name")
+        note.path.write_text(storage.render_note(note.metadata, note.body), encoding="utf-8")
+        # A manually assigned company must survive the migration.
+        other = self.company("직접 선택한 회사")
+        explicit = self.meeting(project_id=project["id"], company_id=other["id"])
+        explicit_path = self.vault.find_by_id("meeting", explicit["id"]).path
+        explicit_bytes = explicit_path.read_bytes()
+        self.assertEqual(self.vault.migrate_project_meeting_companies(), 1)
+        migrated = self.vault.find_by_id("meeting", original["id"])
+        self.assertEqual(migrated.metadata["company_name"], project["company_name"])
+        for key in ["id", "created_at", "updated_at", "images", "attendees", "project_id"]:
+            self.assertEqual(migrated.metadata[key], note.metadata[key])
+        self.assertEqual(migrated.body, note.body)
+        self.assertEqual(migrated.path, note.path)
+        self.assertEqual(explicit_path.read_bytes(), explicit_bytes)
+        before = migrated.path.read_bytes()
+        self.assertEqual(self.vault.migrate_project_meeting_companies(), 0)
+        self.assertEqual(migrated.path.read_bytes(), before)
+        self.assertEqual(len(self.vault.list_meetings(company_id=migrated.metadata["company_id"])), 1)
+
+    def test_projects_without_company_and_missing_projects_remain_unassigned(self):
+        project = self.project("")
+        for project_id in [project["id"], "missing", None]:
+            with self.subTest(project_id=project_id):
+                meeting = self.meeting(project_id=project_id)
+                self.assertEqual(meeting["company_id"], "")
+                self.assertEqual(meeting["company_name"], "")
+        self.assertEqual(self.vault.migrate_project_meeting_companies(), 0)
+        self.assertEqual(self.client.get("/api/companies").json()["items"], [])
+
+    def test_failed_legacy_link_keeps_original_note_and_can_be_retried(self):
+        project = self.project()
+        original = self.meeting()
+        note = self.vault.find_by_id("meeting", original["id"])
+        note.metadata["project_id"] = project["id"]
+        note.path.write_text(storage.render_note(note.metadata, note.body), encoding="utf-8")
+        before = note.path.read_bytes()
+        for method in ["write_text", "replace"]:
+            with self.subTest(method=method), patch.object(Path, method, side_effect=OSError("disk full")):
+                with self.assertRaises(OSError):
+                    self.vault.migrate_project_meeting_companies()
+            self.assertEqual(note.path.read_bytes(), before)
+            self.assertEqual(list(note.path.parent.iterdir()), [note.path])
+        self.assertEqual(self.vault.migrate_project_meeting_companies(), 1)
+        self.assertEqual(self.vault.find_by_id("meeting", original["id"]).body, note.body)
 
     def test_normalized_names_reuse_one_registered_company(self):
         first = self.company("  ACME   Korea  ")

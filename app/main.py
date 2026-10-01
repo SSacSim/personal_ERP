@@ -47,6 +47,7 @@ def ensure_vault() -> None:
     vault.ensure()
     admin = next(user for user in auth.store.list_users() if user["login_id"] == "admin")
     vault.migrate_private_notes(admin["id"])
+    vault.migrate_project_meeting_companies()
     team_chat.store.ensure()
     team_chat.store.sync_account_profiles(auth.store.list_users())
 

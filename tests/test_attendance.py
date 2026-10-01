@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from app import storage
 from app.main import app
-from app.routers import attendance, calendar
+from app.routers import attendance, calendar, dashboard
 from auth_support import authorize
 
 
@@ -20,7 +20,7 @@ class AttendanceTests(unittest.TestCase):
         self.notes = self.root / "Notes"
         self.stack.enter_context(patch.object(storage, "VAULT_DIR", self.notes))
         self.vault = storage.ObsidianVault(self.notes)
-        for module in (attendance, calendar):
+        for module in (attendance, calendar, dashboard):
             self.stack.enter_context(patch.object(module, "vault", self.vault))
         self.client = TestClient(app)
         self.stack.callback(self.client.close)
@@ -96,6 +96,64 @@ class AttendanceTests(unittest.TestCase):
         self.assertEqual(result["total"], 4)
         self.assertTrue(all(item["notes"] == "" for item in result["items"]))
         self.assertEqual({item["kind"] for item in result["items"]}, {"annual_leave", "half_day", "remote_work"})
+
+    def test_remote_work_is_in_team_absences_instead_of_today_or_tomorrow_schedule(self):
+        remote = self.create(kind="remote_work", start_date="2026-10-02")
+        regular = self.vault.create_calendar_event({
+            "title": "팀 행사", "category": "회사 일정", "start_date": "2026-10-01", "end_date": "2026-10-02",
+        })
+        for target_date, day_key, event_key, absence_key, suffix in [
+            ("2026-10-01", "tomorrow_day", "tomorrow_events", "tomorrow_absences", "_tomorrow"),
+            ("2026-10-02", "today", "events", "absences", ""),
+        ]:
+            with self.subTest(date=target_date):
+                response = self.client.get(f"/api/dashboard?date={target_date}")
+                self.assertEqual(response.status_code, 200, response.text)
+                data = response.json()
+                self.assertEqual([item["id"] for item in data[day_key]["events"]], [regular["id"]])
+                self.assertEqual(data[event_key], data[day_key]["events"])
+                self.assertEqual([item["event_id"] for item in data[day_key]["absences"]], [remote["id"]])
+                self.assertEqual(data[day_key]["absences"][0]["person"], "김민수")
+                self.assertEqual(data[day_key]["absences"][0]["category"], "재택")
+                self.assertEqual(data[absence_key], data[day_key]["absences"])
+                self.assertEqual(data["counts"]["absence_people" + suffix], 1)
+                self.assertEqual(data["counts"]["absence_events" + suffix], 1)
+                self.assertEqual(data["counts"]["events_tomorrow" if suffix else "events_today"], 1)
+        calendar_ids = [item["id"] for item in self.client.get("/api/calendar?date=2026-10-02").json()["items"]]
+        self.assertCountEqual(calendar_ids, [remote["id"], regular["id"]])
+        self.assertEqual(self.client.get("/api/attendance?kind=remote_work").json()["items"][0]["id"], remote["id"])
+
+    def test_remote_categories_and_date_ranges_share_absence_counts(self):
+        remote_ids = []
+        for category in ["재택", "재택근무", "remote_work"]:
+            item = self.vault.create_calendar_event({
+                "title": "근무 일정", "category": category, "start_date": "2026-09-30", "end_date": "2026-10-02",
+                "attendees": ["김민수", "동료"],
+            })
+            remote_ids.append(item["id"])
+        self.create(kind="remote_work", start_date="2026-09-29")
+        removed = self.create(kind="remote_work", start_date="2026-10-01")
+        self.client.delete(f"/api/calendar/events/{removed['id']}")
+        data = self.client.get("/api/dashboard?date=2026-09-30").json()
+        for day, suffix in [(data["today"], ""), (data["tomorrow_day"], "_tomorrow")]:
+            self.assertEqual(day["events"], [])
+            self.assertEqual({item["event_id"] for item in day["absences"]}, set(remote_ids))
+            self.assertEqual(len(day["absences"]), 6)
+            self.assertEqual(data["counts"]["absence_people" + suffix], 2)
+            self.assertEqual(data["counts"]["absence_events" + suffix], 3)
+            self.assertEqual(data["counts"]["events_tomorrow" if suffix else "events_today"], 0)
+        after = self.client.get("/api/dashboard?date=2026-10-03").json()
+        self.assertEqual(after["today"]["absences"], [])
+
+    def test_meeting_about_remote_work_remains_a_regular_schedule(self):
+        meeting = self.vault.create_calendar_event({
+            "title": "재택근무 운영 회의", "category": "미팅", "date": "2026-10-02", "notes": "remote_work 절차 검토",
+        })
+        remote = self.create(kind="remote_work", start_date="2026-10-02")
+        self.client.patch(f"/api/calendar/events/{remote['id']}", json={"category": "회사 일정"})
+        data = self.client.get("/api/dashboard?date=2026-10-01").json()
+        self.assertCountEqual([item["id"] for item in data["tomorrow_day"]["events"]], [meeting["id"], remote["id"]])
+        self.assertEqual(data["tomorrow_day"]["absences"], [])
 
     def test_pagination_and_reopening_vault_preserve_calendar_identity(self):
         entries = [self.create(start_date=f"2026-09-{day:02d}") for day in range(1, 28)]

@@ -1713,7 +1713,7 @@ async function projectWorkspaceDialog(project) {
                     ${projectResourceList(items)}
                   </aside>
                   <section class="project-resource-detail">
-                    ${projectResourceDetail(selectedItem)}
+                    ${projectResourceDetail(selectedItem, project)}
                   </section>
                 </section>
               `
@@ -2125,7 +2125,7 @@ function projectResourceListItem(item) {
   `;
 }
 
-function projectResourceDetail(item) {
+function projectResourceDetail(item, project) {
   if (projectDetailTab === "files") {
     return projectFileDetail(item);
   }
@@ -2146,10 +2146,10 @@ function projectResourceDetail(item) {
     return projectRecordView(item);
   }
   if (projectResourceMode === "new") {
-    return meetingResourceForm();
+    return meetingResourceForm(null, { projectCompanyName: project?.company_name || "" });
   }
   if (projectResourceMode === "edit" && item) {
-    return meetingResourceForm(item);
+    return meetingResourceForm(item, { projectCompanyName: project?.company_name || "" });
   }
   if (!item) {
     return `
@@ -2165,14 +2165,16 @@ function meetingCompanyOptions(selectedId = "") {
   return meetingCompanies.map((company) => `<option data-company-option value="${escapeHtml(company.id)}" ${company.id === selectedId ? "selected" : ""}>${escapeHtml(company.name)}</option>`).join("");
 }
 
-function meetingCompanyField(selectedId = "") {
+function meetingCompanyField(selectedId = "", projectCompanyName = "", projectLinked = false) {
+  const automaticCompany = projectCompanyName || projectLinked;
+  const defaultLabel = projectCompanyName ? `${projectCompanyName} (프로젝트 회사)` : projectLinked ? "프로젝트 회사 자동 적용" : "회사 미지정";
   return `<div class="meeting-company-field full">
-    <div class="meeting-company-select-row"><label>회의 회사<select name="company_id" data-company-select><option value="">회사 미지정</option>${meetingCompanyOptions(selectedId)}</select></label><button class="secondary" type="button" data-company-add>+ 회사 등록</button></div>
+    <div class="meeting-company-select-row"><label>회의 회사<select name="company_id" data-company-select><option value="">${escapeHtml(defaultLabel)}</option>${meetingCompanyOptions(selectedId)}</select></label><button class="secondary" type="button" data-company-add>+ 회사 등록</button></div>
     <div class="meeting-company-create" hidden>
       <label>등록할 회사명<input data-company-name maxlength="120" autocomplete="off" placeholder="예: 주식회사 한빛" /></label>
       <div><button type="button" data-company-save>등록 후 선택</button><button class="secondary" type="button" data-company-cancel>취소</button></div>
     </div>
-    <p class="meeting-company-help">등록된 회사를 선택하면 나중에 회사별로 회의록을 모아볼 수 있습니다.</p>
+    <p class="meeting-company-help">${automaticCompany ? "회사를 따로 선택하지 않으면 프로젝트 회사가 적용됩니다. 저장한 회의록은 ‘회의록’ 메뉴의 회사별 보기에도 함께 표시됩니다." : "등록된 회사를 선택하면 나중에 회사별로 회의록을 모아볼 수 있습니다."}</p>
     <p class="meeting-company-feedback" role="status" hidden></p>
   </div>`;
 }
@@ -2228,7 +2230,7 @@ function setupMeetingCompanyFields(root) {
   });
 }
 
-function meetingResourceForm(item = null, { standalone = false, defaultCompanyId = "" } = {}) {
+function meetingResourceForm(item = null, { standalone = false, defaultCompanyId = "", projectCompanyName = "" } = {}) {
   const title = item?.title || "";
   const attendees = Array.isArray(item?.attendees) ? item.attendees.join(", ") : currentUser().name;
   const images = resourceImages(item);
@@ -2237,7 +2239,7 @@ function meetingResourceForm(item = null, { standalone = false, defaultCompanyId
     <form class="form resource-form" id="${standalone ? "meeting-form" : "project-resource-form"}">
       <input name="existing_images" type="hidden" value="${escapeHtml(JSON.stringify(images))}" />
       <label class="full">회의명<input name="title" required maxlength="140" value="${escapeHtml(title)}" placeholder="예: 킥오프 회의" /></label>
-      ${meetingCompanyField(item?.company_id || (item ? "" : defaultCompanyId))}
+      ${meetingCompanyField(item?.company_id || (item ? "" : defaultCompanyId), projectCompanyName, !!item?.project_id)}
       <label>일자<input name="date" type="date" required value="${escapeHtml(item?.date || toDateInputValue(new Date()))}" /></label>
       <label>시작 시간<input name="start_time" type="time" value="${escapeHtml(item?.start_time || "")}" /></label>
       <label class="full">참석자<input name="attendees" value="${escapeHtml(attendees)}" placeholder="쉼표 또는 줄바꿈으로 구분" /></label>

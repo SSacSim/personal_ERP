@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta
 import json
 from pathlib import Path
 import re
+from tempfile import TemporaryDirectory
 from typing import Any
 from uuid import uuid4
 
@@ -36,6 +37,7 @@ ASSET_CONTENT_TYPES = {
 MAX_ASSET_BYTES = 10 * 1024 * 1024
 MAX_PROJECT_FILE_BYTES = 50 * 1024 * 1024
 DEFAULT_FILE_CONTENT_TYPE = "application/octet-stream"
+REMOTE_WORK_CATEGORIES = frozenset({"재택", "재택근무", "remote_work"})
 ABSENCE_KEYWORDS = (
     "연차",
     "휴가",
@@ -468,7 +470,12 @@ class ObsidianVault:
             items.append(note.as_dict())
         return sorted(items, key=lambda item: (item.get("start_date") or item.get("date", ""), item.get("start_time", ""), item.get("title", "")))
 
+    def is_remote_work_event(self, item: dict[str, Any]) -> bool:
+        return str(item.get("category", "")).strip().lower() in REMOTE_WORK_CATEGORIES
+
     def is_absence_event(self, item: dict[str, Any]) -> bool:
+        if self.is_remote_work_event(item):
+            return True
         text = " ".join(
             [
                 str(item.get("category", "")),
@@ -879,8 +886,13 @@ class ObsidianVault:
         fields = [key for key, value in updates.items() if value is not None]
         return self.write("project", name, metadata, body, note.path, log_action="수정", log_fields=fields).as_dict()
 
-    def meeting_company(self, company_id: str | None) -> dict[str, str]:
+    def meeting_company(self, company_id: str | None, project_id: str | None = None) -> dict[str, str]:
         if not company_id:
+            project = self.find_by_id("project", project_id) if project_id else None
+            company_name = str(project.metadata.get("company_name") or "").strip() if project else ""
+            if company_name:
+                company = self.companies.create(company_name)
+                return {"company_id": company["id"], "company_name": company["name"]}
             return {"company_id": "", "company_name": ""}
         company = self.companies.get(company_id)
         if company is None:
@@ -888,9 +900,9 @@ class ObsidianVault:
         return {"company_id": company["id"], "company_name": company["name"]}
 
     def create_meeting(self, data: dict[str, Any]) -> dict[str, Any]:
-        company = self.meeting_company(data.get("company_id"))
         attendees = data.get("attendees", [])
         project_id = data.get("project_id") or ""
+        company = self.meeting_company(data.get("company_id"), project_id)
         body = self.meeting_body(data)
         metadata = {
             "title": data["title"],
@@ -902,6 +914,28 @@ class ObsidianVault:
             "images": data.get("images", []),
         }
         return self.write("meeting", data["title"], metadata, body, log_action="등록").as_dict()
+
+    def migrate_project_meeting_companies(self) -> int:
+        """Link previously unassigned project meetings without copying documents."""
+        migrated = 0
+        for note in self.list_notes("meeting"):
+            if note.metadata.get("deleted") is True or note.metadata.get("company_id") or not note.metadata.get("project_id"):
+                continue
+            try:
+                company = self.meeting_company(None, note.metadata["project_id"])
+            except ValueError:
+                # Invalid legacy company names must not stop the server starting.
+                continue
+            if not company["company_id"]:
+                continue
+            metadata = {**note.metadata, **company}
+            # Keep the original identity, timestamps, content, images and history.
+            with TemporaryDirectory(prefix=".company-link-", dir=note.path.parent) as temporary:
+                staged = Path(temporary) / note.path.name
+                staged.write_text(render_note(metadata, note.body), encoding="utf-8")
+                staged.replace(note.path)
+            migrated += 1
+        return migrated
 
     def list_meetings(self, project_id: str | None = None, company_id: str | None = None) -> list[dict[str, Any]]:
         items = [note.as_dict() for note in self.list_notes("meeting") if note.metadata.get("deleted") is not True]
@@ -919,11 +953,11 @@ class ObsidianVault:
         if note is None or note.metadata.get("deleted") is True:
             return None
         metadata = dict(note.metadata)
-        if "company_id" in updates:
-            metadata.update(self.meeting_company(updates["company_id"]))
         for key in ["title", "date", "project_id", "start_time", "attendees", "images"]:
             if key in updates and updates[key] is not None:
                 metadata[key] = str(updates[key]) if isinstance(updates[key], date) else updates[key]
+        if "company_id" in updates or not metadata.get("company_id"):
+            metadata.update(self.meeting_company(updates.get("company_id", metadata.get("company_id")), metadata.get("project_id")))
         if "start_time" in updates and updates["start_time"] is None:
             metadata["start_time"] = ""
         title = str(metadata.get("title", "meeting"))
@@ -1193,6 +1227,9 @@ class ObsidianVault:
         projects = [project for project in self.list_projects() if project.get("status") == "active"]
         absences = self.dashboard_absences(events)
         tomorrow_absences = self.dashboard_absences(tomorrow_events)
+        # Remote work belongs in the team's absence panel, not the general schedule.
+        events = [event for event in events if not self.is_remote_work_event(event)]
+        tomorrow_events = [event for event in tomorrow_events if not self.is_remote_work_event(event)]
         absence_people = {item.get("person") for item in absences if item.get("person") and item.get("person") != "대상 미지정"}
         tomorrow_absence_people = {item.get("person") for item in tomorrow_absences if item.get("person") and item.get("person") != "대상 미지정"}
         return {
