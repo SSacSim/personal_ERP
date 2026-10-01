@@ -3,6 +3,7 @@ import { mountReceipts } from "./receipts.js?v=20261001-group";
 import { mountIdInfo } from "./id-info.js?v=20260928-info-lock";
 import { mountPomodoro, mountPomodoroIndicator } from "./pomodoro.js";
 import { mountRemoteWork } from "./remote-work.js";
+import { mountDocuments } from "./documents.js?v=20261001-1gb";
 import { mountAttendance } from "./attendance.js";
 import { requireSession, setupAccountBar, currentUser, userStorageKey } from "./auth-state.js";
 import { setupSidebarOrder } from "./sidebar-order.js?v=20260928";
@@ -19,6 +20,7 @@ let disposeIdInfo = null;
 let disposePomodoro = null;
 let disposeRemoteWork = null;
 let disposeAttendance = null;
+let disposeDocuments = null;
 let documentRenderSequence = 0;
 let meetingCompanies = [];
 const pageTitle = document.querySelector("#page-title");
@@ -32,7 +34,7 @@ const titles = {
   todos: "할 일",
   projects: "프로젝트",
   meetings: "회의록",
-  wiki: "위키",
+  documents: "자료실",
   chat: "팀 채팅",
   receipts: "영수증",
   "id-info": "Info",
@@ -360,6 +362,8 @@ function renderRoute(route) {
   disposePomodoro = null;
   disposeRemoteWork?.();
   disposeRemoteWork = null;
+  disposeDocuments?.();
+  disposeDocuments = null;
   disposeAttendance?.();
   disposeAttendance = null;
   if (route === "calendar") {
@@ -423,7 +427,7 @@ function renderRoute(route) {
     todos: renderTodos,
     projects: renderProjects,
     meetings: renderMeetings,
-    wiki: renderWiki,
+    documents: async () => { disposeDocuments = mountDocuments(view); },
     chat: async () => { disposeTeamChat = mountTeamChat(view); },
     receipts: async () => { disposeReceipts = mountReceipts(view); },
     "id-info": async () => { disposeIdInfo = mountIdInfo(view); },
@@ -2310,25 +2314,6 @@ function projectRecordFeedItem(item) {
   `;
 }
 
-function wikiResourceForm(item = null, { standalone = false } = {}) {
-  const tags = Array.isArray(item?.tags) ? item.tags.join(", ") : "";
-  const images = resourceImages(item);
-  const submitLabel = item ? "위키 수정" : "위키 저장";
-  return `
-    <form class="form resource-form" id="${standalone ? "wiki-form" : "project-resource-form"}">
-      <input name="existing_images" type="hidden" value="${escapeHtml(JSON.stringify(images))}" />
-      <label class="full">문서 제목<input name="title" required maxlength="140" value="${escapeHtml(item?.title || "")}" placeholder="예: 고객사 운영 규칙" /></label>
-      <label>카테고리<input name="category" required maxlength="60" value="${escapeHtml(item?.category || "General")}" /></label>
-      <label>태그<input name="tags" value="${escapeHtml(tags)}" placeholder="쉼표 또는 줄바꿈으로 구분" /></label>
-      ${richTextEditor("content", "본문", noteContentWithImages(item))}
-      <div class="resource-form-actions full">
-        ${item || standalone ? `<button class="secondary" type="button" ${standalone ? "data-document-cancel" : "data-project-resource-cancel"}>취소</button>` : ""}
-        <button type="submit">${submitLabel}</button>
-      </div>
-    </form>
-  `;
-}
-
 function meetingResourceView(item, { standalone = false } = {}) {
   const attendees = Array.isArray(item.attendees) && item.attendees.length ? item.attendees.join(", ") : "없음";
   return `
@@ -2365,26 +2350,6 @@ function projectRecordView(item) {
         <dt>수정</dt><dd>${escapeHtml(formatDateTime(item.updated_at))}</dd>
       </dl>
       ${resourceBlock("기록 내용", noteContentWithImages(item))}
-    </article>
-  `;
-}
-
-function wikiResourceView(item, { standalone = false } = {}) {
-  const tags = Array.isArray(item.tags) && item.tags.length ? item.tags.join(", ") : "없음";
-  return `
-    <article class="resource-reader">
-      <div class="resource-reader-actions">
-        <button class="${standalone ? "" : "secondary"}" type="button" ${standalone ? "data-document-edit" : "data-project-resource-edit"}>수정</button>
-        ${standalone ? "" : `<button class="danger-button" type="button" data-project-resource-delete>삭제</button>`}
-      </div>
-      <p class="eyebrow">Wiki</p>
-      <h3>${escapeHtml(item.title)}</h3>
-      <dl class="resource-meta">
-        <dt>카테고리</dt><dd>${escapeHtml(item.category || "General")}</dd>
-        <dt>태그</dt><dd>${escapeHtml(tags)}</dd>
-        <dt>수정</dt><dd>${escapeHtml(formatDateTime(item.updated_at))}</dd>
-      </dl>
-      ${resourceBlock("본문", noteContentWithImages(item))}
     </article>
   `;
 }
@@ -3014,24 +2979,16 @@ function setupProjectCreateDialog() {
 }
 
 async function renderMeetings() {
-  return renderDocumentPage("meetings");
-}
-
-async function renderWiki() {
-  return renderDocumentPage("wiki");
-}
-
-async function renderDocumentPage(kind) {
+  const kind = "meetings";
   const sequence = ++documentRenderSequence;
-  const isMeeting = kind === "meetings";
-  const label = isMeeting ? "회의록" : "위키";
-  const path = isMeeting ? "/api/meetings" : "/api/wiki";
-  const [result, companyResult] = await Promise.all([api(path), isMeeting ? api("/api/companies") : Promise.resolve(null)]);
-  if (isMeeting) meetingCompanies = companyResult.items;
+  const label = "회의록";
+  const path = "/api/meetings";
+  const [result, companyResult] = await Promise.all([api(path), api("/api/companies")]);
+  meetingCompanies = companyResult.items;
   let items = result.items;
-  let companyFilter = isMeeting ? (new URLSearchParams(location.search).get("company_id") ?? "__all__") : "__all__";
+  let companyFilter = (new URLSearchParams(location.search).get("company_id") ?? "__all__");
   if (companyFilter !== "__all__" && companyFilter !== "" && !meetingCompanies.some((company) => company.id === companyFilter)) companyFilter = "__all__";
-  const filteredItems = () => isMeeting && companyFilter !== "__all__" ? items.filter((item) => (item.company_id || "") === companyFilter) : items;
+  const filteredItems = () => companyFilter !== "__all__" ? items.filter((item) => (item.company_id || "") === companyFilter) : items;
   let selectedId = filteredItems()[0]?.id || null;
   let mode = selectedId ? "view" : "new";
   let saving = false;
@@ -3039,7 +2996,7 @@ async function renderDocumentPage(kind) {
   const active = () => sequence === documentRenderSequence && currentRoute() === kind;
 
   function updateFilterUrl() {
-    if (!isMeeting || !active()) return;
+    if (!active()) return;
     const url = new URL(location.href);
     if (companyFilter === "__all__") url.searchParams.delete("company_id");
     else url.searchParams.set("company_id", companyFilter);
@@ -3048,11 +3005,11 @@ async function renderDocumentPage(kind) {
 
   function documentListHtml() {
     const visible = filteredItems();
-    if (!visible.length) return `<p class="empty">${isMeeting && companyFilter !== "__all__" ? "선택한 회사의 회의록이 없습니다." : `아직 등록된 ${label}${isMeeting ? "이" : "가"} 없습니다.`}</p>`;
+    if (!visible.length) return `<p class="empty">${companyFilter !== "__all__" ? "선택한 회사의 회의록이 없습니다." : `아직 등록된 ${label}이 없습니다.`}</p>`;
     return visible.map((item) => {
-      const meta = isMeeting ? [item.company_name || "회사 미지정", item.date, item.start_time || "시간 미정"] : [item.category || "General", String(item.updated_at || "").slice(0, 10)];
+      const meta = [item.company_name || "회사 미지정", item.date, item.start_time || "시간 미정"];
       const current = item.id === selectedId && mode !== "new";
-      return `<div class="document-entry ${current ? "is-selected" : ""}"><button class="document-open" type="button" data-document-open="${escapeHtml(item.id)}" aria-pressed="${current}"><span class="document-type-icon">${icon(isMeeting ? "notes" : "book")}</span><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(meta.filter(Boolean).join(" · "))}</small></span></button><button class="secondary document-row-edit" type="button" data-document-row-edit="${escapeHtml(item.id)}" aria-label="${escapeHtml(item.title)} 수정">수정</button></div>`;
+      return `<div class="document-entry ${current ? "is-selected" : ""}"><button class="document-open" type="button" data-document-open="${escapeHtml(item.id)}" aria-pressed="${current}"><span class="document-type-icon">${icon("notes")}</span><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(meta.filter(Boolean).join(" · "))}</small></span></button><button class="secondary document-row-edit" type="button" data-document-row-edit="${escapeHtml(item.id)}" aria-label="${escapeHtml(item.title)} 수정">수정</button></div>`;
     }).join("");
   }
 
@@ -3081,15 +3038,15 @@ async function renderDocumentPage(kind) {
     if (!active()) return;
     const selected = items.find((item) => item.id === selectedId);
     const editing = mode === "edit" && selected;
-    const formHtml = isMeeting ? meetingResourceForm(editing ? selected : null, { standalone: true, defaultCompanyId: companyFilter === "__all__" ? "" : companyFilter }) : wikiResourceForm(editing ? selected : null, { standalone: true });
+    const formHtml = meetingResourceForm(editing ? selected : null, { standalone: true, defaultCompanyId: companyFilter === "__all__" ? "" : companyFilter });
     const detail = mode === "view" && selected
-      ? (isMeeting ? meetingResourceView(selected, { standalone: true }) : wikiResourceView(selected, { standalone: true }))
+      ? meetingResourceView(selected, { standalone: true })
       : `<div class="section-head"><h2>${label} ${editing ? "수정" : "작성"}</h2><span class="badge">${editing ? "편집 중" : "새 문서"}</span></div><p class="document-form-hint">${editing ? "내용을 변경한 뒤 하단의 수정 버튼을 눌러 저장하세요." : "팀과 나눌 내용을 기록해 보세요."}</p>${formHtml}`;
     view.innerHTML = `
       <section class="document-workspace">
         <aside class="panel document-list-panel">
-          <div class="section-head"><h2>${isMeeting ? "회의록 목록" : "위키 문서"} <span class="count-label" data-document-count>${filteredItems().length}</span></h2><button type="button" class="document-new-button" data-document-new>${icon("plus")} 새 ${label}</button></div>
-          ${isMeeting ? `<label class="meeting-company-filter">회사별 보기<select data-company-filter data-company-select><option value="__all__" ${companyFilter === "__all__" ? "selected" : ""}>전체 회사</option><option value="" ${companyFilter === "" ? "selected" : ""}>회사 미지정</option>${meetingCompanyOptions(companyFilter)}</select></label>` : ""}
+          <div class="section-head"><h2>회의록 목록 <span class="count-label" data-document-count>${filteredItems().length}</span></h2><button type="button" class="document-new-button" data-document-new>${icon("plus")} 새 ${label}</button></div>
+          <label class="meeting-company-filter">회사별 보기<select data-company-filter data-company-select><option value="__all__" ${companyFilter === "__all__" ? "selected" : ""}>전체 회사</option><option value="" ${companyFilter === "" ? "selected" : ""}>회사 미지정</option>${meetingCompanyOptions(companyFilter)}</select></label>
           <p class="document-list-hint">문서를 선택해 읽거나 바로 수정하세요.</p>
           <div class="document-list">${documentListHtml()}</div>
         </aside>
@@ -3121,7 +3078,7 @@ async function renderDocumentPage(kind) {
     const formEl = view.querySelector(".resource-form");
     if (formEl) {
       setupInlineImageEditors(formEl);
-      if (isMeeting) setupMeetingCompanyFields(formEl);
+      setupMeetingCompanyFields(formEl);
       formEl.elements.title.addEventListener("input", () => formEl.elements.title.setCustomValidity(""));
       formEl.addEventListener("submit", saveDocument);
     }
@@ -3140,12 +3097,10 @@ async function renderDocumentPage(kind) {
       formEl.elements.title.reportValidity();
       return;
     }
-    const body = String(form.get(isMeeting ? "notes" : "content") || "");
+    const body = String(form.get("notes") || "");
     const agenda = String(form.get("agenda") || "");
     const images = imagesReferencedInContent(uniqueImages([...existingFormImages(form), ...uploadedInlineImages(formEl)]), `${agenda}\n${body}`);
-    const payload = isMeeting
-      ? { title, company_id: form.get("company_id") || "", date: form.get("date"), start_time: String(form.get("start_time") || ""), attendees: splitList(form.get("attendees")), agenda, notes: body, images }
-      : { title, category: String(form.get("category") || "").trim() || "General", tags: splitList(form.get("tags")), content: body, images };
+    const payload = { title, company_id: form.get("company_id") || "", date: form.get("date"), start_time: String(form.get("start_time") || ""), attendees: splitList(form.get("attendees")), agenda, notes: body, images };
     const editing = mode === "edit" && selectedId;
     const url = editing ? `${path}/${encodeURIComponent(selectedId)}` : path;
     const submit = formEl.querySelector("[type='submit']");
@@ -3161,13 +3116,13 @@ async function renderDocumentPage(kind) {
       const saved = await api(url, { method: editing ? "PATCH" : "POST", body: JSON.stringify(payload) });
       if (!active()) return;
       items = editing ? items.map((item) => item.id === saved.id ? saved : item) : [saved, ...items];
-      if (isMeeting && companyFilter !== "__all__" && companyFilter !== (saved.company_id || "")) {
+      if (companyFilter !== "__all__" && companyFilter !== (saved.company_id || "")) {
         companyFilter = saved.company_id || "";
         updateFilterUrl();
       }
       selectedId = saved.id;
       mode = "view";
-      status = `${label}${isMeeting ? "을" : "를"} ${editing ? "수정" : "저장"}했습니다.`;
+      status = `${label}을 ${editing ? "수정" : "저장"}했습니다.`;
       draw();
     } catch (error) {
       if (!active() || !formEl.isConnected) return;
@@ -3310,13 +3265,6 @@ function meetingSummary(item) {
   const attendees = Array.isArray(item.attendees) ? item.attendees.join(", ") : "";
   const meta = [item.company_name || "회사 미지정", item.date, item.start_time, attendees || "참석자 미정"].filter(Boolean).join(" · ");
   return `<div class="row-main"><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(meta)}</span></div><span class="badge">${escapeHtml(item.path || "회의록")}</span>`;
-}
-
-function wikiSummary(item) {
-  const tags = Array.isArray(item.tags) && item.tags.length ? item.tags.join(", ") : "";
-  const preview = notePreview(item);
-  const meta = [item.category || "General", tags].filter(Boolean).join(" · ");
-  return `<div class="row-main"><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(meta)}</span>${preview ? `<p class="note-preview">${escapeHtml(preview)}</p>` : ""}</div><span class="badge">${escapeHtml(String(item.updated_at || "").slice(0, 10) || "Wiki")}</span>`;
 }
 
 function notePreview(item) {

@@ -3303,7 +3303,7 @@ input[type="checkbox"] { accent-color: var(--accent); }
   *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
 }
 
-/* Meetings and wiki use the same reading and editing workspace. */
+/* Meeting reading and editing workspace. */
 .meeting-company-field [hidden] { display: none !important; }
 .meeting-company-select-row { display: flex; align-items: flex-end; gap: 10px; }
 .meeting-company-select-row label { flex: 1; min-width: 0; }

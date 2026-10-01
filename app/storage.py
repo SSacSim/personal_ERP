@@ -19,7 +19,6 @@ FOLDERS = {
     "todo": "Todos",
     "project": "Projects",
     "meeting": "Meetings",
-    "wiki_page": "Wiki",
     "project_file": "Files",
     "project_record": "Records",
     "report": "Reports",
@@ -204,7 +203,7 @@ class ObsidianVault:
 
     def ensure(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
-        for folder in {*FOLDERS.values(), "Dashboard", "Wiki"}:
+        for folder in {*FOLDERS.values(), "Dashboard"}:
             (self.root / folder).mkdir(parents=True, exist_ok=True)
         (self.root / "Assets").mkdir(parents=True, exist_ok=True)
         readme = self.root / "README.md"
@@ -1055,51 +1054,6 @@ class ObsidianVault:
         metadata["deleted_at"] = datetime.now().isoformat(timespec="seconds")
         title = str(metadata.get("title", "record"))
         return self.write("project_record", title, metadata, note.body, note.path, log_action="삭제").as_dict()
-
-    def create_wiki_page(self, data: dict[str, Any]) -> dict[str, Any]:
-        project_id = data.get("project_id") or ""
-        body = f"# {data['title']}\n\n{data.get('content', '').strip()}"
-        metadata = {
-            "title": data["title"],
-            "project_id": project_id,
-            "category": data.get("category") or "General",
-            "tags": data.get("tags", []),
-            "images": data.get("images", []),
-        }
-        return self.write("wiki_page", data["title"], metadata, body, log_action="등록").as_dict()
-
-    def list_wiki_pages(self, project_id: str | None = None) -> list[dict[str, Any]]:
-        items = [note.as_dict() for note in self.list_notes("wiki_page") if note.metadata.get("deleted") is not True]
-        if project_id is not None:
-            items = [item for item in items if item.get("project_id") == project_id]
-        return sorted(items, key=lambda item: (item.get("updated_at", ""), item.get("title", "")), reverse=True)
-
-    def update_wiki_page(self, page_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
-        note = self.find_by_id("wiki_page", page_id)
-        if note is None or note.metadata.get("deleted") is True:
-            return None
-        metadata = dict(note.metadata)
-        for key in ["title", "project_id", "category", "tags", "images"]:
-            if key in updates and updates[key] is not None:
-                metadata[key] = updates[key]
-        title = str(metadata.get("title", "wiki"))
-        body = note.body
-        if "content" in updates and updates["content"] is not None:
-            body = body_with_replaced_content(note.body, title, str(updates["content"]))
-        elif "title" in updates and updates["title"] is not None:
-            body = body_with_replaced_content(note.body, title, re.sub(r"^# .*(\r?\n)+", "", split_change_log(note.body)[0]).strip())
-        fields = [key for key, value in updates.items() if value is not None]
-        return self.write("wiki_page", title, metadata, body, note.path, log_action="수정", log_fields=fields).as_dict()
-
-    def delete_wiki_page(self, page_id: str) -> dict[str, Any] | None:
-        note = self.find_by_id("wiki_page", page_id)
-        if note is None or note.metadata.get("deleted") is True:
-            return None
-        metadata = dict(note.metadata)
-        metadata["deleted"] = True
-        metadata["deleted_at"] = datetime.now().isoformat(timespec="seconds")
-        title = str(metadata.get("title", "wiki"))
-        return self.write("wiki_page", title, metadata, note.body, note.path, log_action="삭제").as_dict()
 
     def weekly_todo_groups(self, week_start: date, week_end: date, user_id: str) -> list[dict[str, Any]]:
         all_todos = []

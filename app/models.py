@@ -173,24 +173,6 @@ class MeetingUpdate(BaseModel):
     images: list[dict[str, str]] | None = None
 
 
-class WikiPageCreate(BaseModel):
-    title: str = Field(min_length=1, max_length=140)
-    project_id: str | None = None
-    category: str = Field(default="General", min_length=1, max_length=60)
-    tags: list[str] = Field(default_factory=list)
-    content: str = ""
-    images: list[dict[str, str]] = Field(default_factory=list)
-
-
-class WikiPageUpdate(BaseModel):
-    title: str | None = Field(default=None, min_length=1, max_length=140)
-    project_id: str | None = None
-    category: str | None = Field(default=None, min_length=1, max_length=60)
-    tags: list[str] | None = None
-    content: str | None = None
-    images: list[dict[str, str]] | None = None
-
-
 class ProjectRecordCreate(BaseModel):
     title: str = Field(min_length=1, max_length=140)
     project_id: str | None = None

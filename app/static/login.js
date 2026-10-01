@@ -17,7 +17,7 @@ form.addEventListener("submit", async (event) => {
     const next = new URLSearchParams(location.search).get("next");
     if (data.user.role !== "admin" && next) {
       const url = new URL(next, location.origin);
-      const allowed = new Set(["/dashboard", "/calendar", "/attendance", "/tasks", "/todos", "/projects", "/meetings", "/wiki", "/chat", "/receipts", "/receipt-upload", "/remote-work", "/id-info", "/pomodoro"]);
+      const allowed = new Set(["/dashboard", "/calendar", "/attendance", "/tasks", "/todos", "/projects", "/meetings", "/documents", "/chat", "/receipts", "/receipt-upload", "/remote-work", "/id-info", "/pomodoro"]);
       if (url.origin === location.origin && allowed.has(url.pathname)) destination = url.pathname + url.search;
     }
     form.elements.password.value = "";

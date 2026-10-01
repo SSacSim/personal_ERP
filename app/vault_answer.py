@@ -113,6 +113,9 @@ def iter_search_sources(user_id: str) -> list[VaultSource]:
 def iter_vault_sources(user_id: str) -> list[VaultSource]:
     sources: list[VaultSource] = []
     for path in sorted(vault.root.rglob("*.md")):
+        # Retired wiki notes and binary uploads are not active ERP search sources.
+        if path.relative_to(vault.root).parts[0] in {"Wiki", "Documents"}:
+            continue
         if any(part.startswith(".") for part in path.relative_to(vault.root).parts):
             continue
         try:

@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from app import auth, storage, vault_answer
 from app.main import app
-from app.routers import attendance, calendar, dashboard, meetings, projects, tasks, todos, wiki
+from app.routers import attendance, calendar, dashboard, meetings, projects, tasks, todos
 from auth_support import authorize
 
 
@@ -23,7 +23,7 @@ class PrivateWorkspaceTests(unittest.TestCase):
         self.root = Path(self.stack.enter_context(TemporaryDirectory()))
         self.vault = storage.ObsidianVault(self.root / "Notes")
         self.stack.enter_context(patch.object(storage, "VAULT_DIR", self.vault.root))
-        for module in (attendance, calendar, dashboard, meetings, projects, tasks, todos, wiki, vault_answer):
+        for module in (attendance, calendar, dashboard, meetings, projects, tasks, todos, vault_answer):
             self.stack.enter_context(patch.object(module, "vault", self.vault))
         # Search tests must never scan the real workspace or its notes.
         self.stack.enter_context(patch.object(vault_answer, "BASE_DIR", self.root))
@@ -196,11 +196,11 @@ class PrivateWorkspaceTests(unittest.TestCase):
         project = self.post("/api/projects", {"name": "Shared project"})
         event = self.post("/api/calendar/events", {"title": "Team event", "date": DAY})
         meeting = self.post("/api/meetings", {"title": "Team meeting", "date": DAY})
-        wiki_note = self.post("/api/wiki", {"title": "Shared reference", "content": "Shared team knowledge"})
+        reference = self.post("/api/meetings", {"title": "Shared reference", "date": "2026-09-29", "notes": "Shared team knowledge"})
         leave = self.post("/api/attendance", {"kind": "annual_leave", "start_date": DAY})
         self.login(self.b)
         for url, item in (("/api/projects", project), (f"/api/calendar?date={DAY}", event),
-                          ("/api/meetings", meeting), ("/api/wiki", wiki_note), ("/api/attendance", leave)):
+                          ("/api/meetings", meeting), ("/api/meetings", reference), ("/api/attendance", leave)):
             self.assertIn(item["id"], [entry["id"] for entry in self.client.get(url).json()["items"]])
         data = self.client.get(f"/api/dashboard?date={DAY}").json()
         self.assertEqual(data["counts"]["meetings_today"], 1)

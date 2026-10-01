@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app import storage
-from app.routers import assets, meetings, project_records, wiki
+from app.routers import assets, meetings, project_records
 
 
 class DocumentEditingTests(unittest.TestCase):
@@ -19,12 +19,10 @@ class DocumentEditingTests(unittest.TestCase):
         self.stack.enter_context(patch.object(storage, "VAULT_DIR", self.root))
         self.vault = storage.ObsidianVault(self.root)
         self.stack.enter_context(patch.object(meetings, "vault", self.vault))
-        self.stack.enter_context(patch.object(wiki, "vault", self.vault))
         self.stack.enter_context(patch.object(assets, "vault", self.vault))
         self.stack.enter_context(patch.object(project_records, "vault", self.vault))
         app = FastAPI()
         app.include_router(meetings.router)
-        app.include_router(wiki.router)
         app.include_router(assets.router)
         app.include_router(project_records.router)
         self.client = self.stack.enter_context(TestClient(app))
@@ -75,25 +73,8 @@ class DocumentEditingTests(unittest.TestCase):
         self.assertEqual(self.vault.meeting_section(updated["body"], "회의 내용"), "새 내용\n\n## 다음 단계\n- 검토")
         self.assertEqual(self.client.patch(f"/api/meetings/{original['id']}", json={"title": ""}).status_code, 422)
 
-    def test_wiki_edit_preserves_id_project_images_and_reloads_from_disk(self):
-        original = self.client.post("/api/wiki", json={
-            "title": "원래 위키", "project_id": "linked-project", "category": "운영", "tags": ["배포"],
-            "content": "기존 문서\n\n![기존 그림|60](/api/assets/example.png)", "images": self.images,
-        }).json()
-        content = "수정한 문서\n\n## 체크리스트\n- 첫 항목\n\n![기존 그림|60](/api/assets/example.png)"
-        response = self.client.patch(f"/api/wiki/{original['id']}", json={"title": "개정 위키", "category": "팀 지식", "tags": ["운영", "검토"], "content": content})
-        self.assertEqual(response.status_code, 200)
-        updated = response.json()
-        self.assertEqual(updated["id"], original["id"])
-        self.assertEqual(updated["project_id"], original["project_id"])
-        self.assertEqual(updated["images"], self.images)
-        self.assertIn(content, updated["body"])
-        reopened = storage.ObsidianVault(self.root).list_wiki_pages()
-        self.assertEqual(len(reopened), 1)
-        self.assertEqual(reopened[0], updated)
-
     def test_missing_document_returns_404_instead_of_creating_new_note(self):
-        for path in ["meetings", "wiki"]:
+        for path in ["meetings"]:
             self.assertEqual(self.client.patch(f"/api/{path}/missing", json={"title": "수정"}).status_code, 404)
             self.assertEqual(self.client.get(f"/api/{path}").json()["items"], [])
 
@@ -107,7 +88,6 @@ class DocumentEditingTests(unittest.TestCase):
         markdown = f"앞 내용\n\n![붙여넣은 이미지|60]({image['url']})\n\n뒤 내용"
         for path, field, extra, list_method in [
             ("meetings", "notes", {"date": "2026-09-29"}, "list_meetings"),
-            ("wiki", "content", {}, "list_wiki_pages"),
             ("project-records", "content", {"project_id": "project"}, "list_project_records"),
         ]:
             with self.subTest(path=path):

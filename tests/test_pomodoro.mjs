@@ -177,13 +177,13 @@ test("floating timer hides on pause, reset, completion and expiry between delaye
   const timer = startTimer(createTimer(1), NOW);
   const paused = pauseTimer(timer, NOW + 15000);
   for (const value of [createTimer(), paused, resetTimer(timer), advanceTimer(timer, NOW + 60000)]) {
-    assert.equal(miniTimerState(value, "wiki", NOW + 15000).visible, false);
+    assert.equal(miniTimerState(value, "documents", NOW + 15000).visible, false);
   }
-  assert.equal(miniTimerState(timer, "wiki", NOW + 90000).visible, false);
-  assert.equal(miniTimerState(timer, "wiki", NOW + 90000).remainingPercent, 0);
+  assert.equal(miniTimerState(timer, "documents", NOW + 90000).visible, false);
+  assert.equal(miniTimerState(timer, "documents", NOW + 90000).remainingPercent, 0);
   const resumed = startTimer(paused, NOW + 120000);
-  assert.equal(miniTimerState(resumed, "wiki", NOW + 120000).remainingPercent, 75);
-  assert.equal(miniTimerState(resumed, "wiki", NOW + 120000).visible, true);
+  assert.equal(miniTimerState(resumed, "documents", NOW + 120000).remainingPercent, 75);
+  assert.equal(miniTimerState(resumed, "documents", NOW + 120000).visible, true);
 });
 
 test("reloading a different ERP tab restores the same remaining bar", () => {

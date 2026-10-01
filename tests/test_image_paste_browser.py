@@ -70,7 +70,8 @@ class ImagePasteBrowserTests(unittest.TestCase):
         self.addCleanup(self.context.close)
         self.context.add_cookies([{"name": "erp_session", "value": self.session, "url": self.origin}])
         self.page = self.context.new_page()
-        self.page.on("dialog", lambda dialog: dialog.dismiss())
+        self.dismiss_dialog = lambda dialog: dialog.dismiss()
+        self.page.on("dialog", self.dismiss_dialog)
 
     def new_document(self, path, label):
         self.page.goto(self.origin + path)
@@ -94,8 +95,8 @@ class ImagePasteBrowserTests(unittest.TestCase):
           surface.dispatchEvent(new ClipboardEvent('paste', {clipboardData: data, bubbles: true, cancelable: true}));
         }""", {"png": PNG, "count": count, "html": html})
 
-    def test_meeting_and_wiki_images_survive_save_reload_and_edit(self):
-        for path, label, field in [("/meetings", "회의록", "notes"), ("/wiki", "위키", "content")]:
+    def test_meeting_images_survive_save_reload_and_edit(self):
+        for path, label, field in [("/meetings", "회의록", "notes")]:
             with self.subTest(path=path):
                 self.new_document(path, label)
                 selector = f"[data-rich-editor={field}]"
@@ -113,22 +114,22 @@ class ImagePasteBrowserTests(unittest.TestCase):
                 self.assertTrue(self.page.locator(".resource-reader img").evaluate_all("images => images.every(image => image.complete && image.naturalWidth > 0)"))
 
     def test_pending_and_failed_uploads_block_save_and_can_retry(self):
-        self.new_document("/wiki", "위키")
+        self.new_document("/meetings", "회의록")
         requests = []
         self.page.route("**/api/assets", lambda route: requests.append(route))
-        self.paste("[data-rich-editor=content]")
-        self.page.get_by_role("button", name="위키 저장", exact=True).click()
+        self.paste("[data-rich-editor=notes]")
+        self.page.get_by_role("button", name="회의록 저장", exact=True).click()
         expect(self.page.locator("[data-image-upload-feedback]")).to_be_visible()
-        expect(self.page.locator("#wiki-form")).to_be_visible()
+        expect(self.page.locator("#meeting-form")).to_be_visible()
         self.assertEqual(len(requests), 1)
         requests[0].fulfill(status=503, content_type="application/json", body='{"detail":"test upload failure"}')
         expect(self.page.locator('[data-image-upload="error"]')).to_be_visible()
-        self.page.get_by_role("button", name="위키 저장", exact=True).click()
-        expect(self.page.locator("#wiki-form")).to_be_visible()
+        self.page.get_by_role("button", name="회의록 저장", exact=True).click()
+        expect(self.page.locator("#meeting-form")).to_be_visible()
         self.page.unroute("**/api/assets")
         self.page.get_by_role("button", name="다시 시도", exact=True).click()
         expect(self.page.locator(".editor-rich-image")).to_have_count(1)
-        self.page.get_by_role("button", name="위키 저장", exact=True).click()
+        self.page.get_by_role("button", name="회의록 저장", exact=True).click()
         expect(self.page.locator(".resource-reader img")).to_have_count(1)
 
     def test_html_image_and_text_are_saved_without_temporary_data_url(self):
@@ -144,17 +145,17 @@ class ImagePasteBrowserTests(unittest.TestCase):
         self.assertNotIn("data:image", self.page.locator("textarea[name=agenda]").input_value())
 
     def test_file_picker_and_removing_failed_image(self):
-        self.new_document("/wiki", "위키")
-        self.page.locator("[data-inline-image-input=content]").set_input_files({"name": "picture.png", "mimeType": "image/png", "buffer": base64.b64decode(PNG)})
+        self.new_document("/meetings", "회의록")
+        self.page.locator("[data-inline-image-input=notes]").set_input_files({"name": "picture.png", "mimeType": "image/png", "buffer": base64.b64decode(PNG)})
         expect(self.page.locator(".editor-rich-image")).to_have_count(1)
-        self.page.locator("[data-inline-image-input=content]").set_input_files({"name": "bad.svg", "mimeType": "image/svg+xml", "buffer": b"<svg/>"})
+        self.page.locator("[data-inline-image-input=notes]").set_input_files({"name": "bad.svg", "mimeType": "image/svg+xml", "buffer": b"<svg/>"})
         expect(self.page.locator('[data-image-upload="error"]')).to_be_visible()
         self.page.locator(".image-upload-placeholder").get_by_role("button", name="삭제", exact=True).click()
-        self.page.get_by_role("button", name="위키 저장", exact=True).click()
+        self.page.get_by_role("button", name="회의록 저장", exact=True).click()
         expect(self.page.locator(".resource-reader img")).to_have_count(1)
 
     def test_real_keyboard_image_and_plain_text_paste(self):
-        self.new_document("/wiki", "위키")
+        self.new_document("/meetings", "회의록")
         self.context.grant_permissions(["clipboard-read", "clipboard-write"])
         self.page.evaluate("""async () => {
           const canvas = document.createElement('canvas');
@@ -162,15 +163,94 @@ class ImagePasteBrowserTests(unittest.TestCase):
           const blob = await new Promise(resolve => canvas.toBlob(resolve));
           await navigator.clipboard.write([new ClipboardItem({'image/png': blob})]);
         }""")
-        self.page.locator("[data-rich-editor=content]").click()
+        self.page.locator("[data-rich-editor=notes]").click()
         self.page.keyboard.press("Control+V")
         expect(self.page.locator(".editor-rich-image")).to_have_count(1)
         self.page.evaluate("navigator.clipboard.writeText('일반 텍스트\\n두 번째 줄')")
         self.page.keyboard.press("Control+V")
-        expect(self.page.locator("[data-rich-editor=content]")).to_contain_text("일반 텍스트")
-        self.page.get_by_role("button", name="위키 저장", exact=True).click()
+        expect(self.page.locator("[data-rich-editor=notes]")).to_contain_text("일반 텍스트")
+        self.page.get_by_role("button", name="회의록 저장", exact=True).click()
         expect(self.page.locator(".resource-reader img")).to_have_count(1)
         expect(self.page.locator(".resource-reader")).to_contain_text("두 번째 줄")
+
+    def test_document_library_folders_upload_download_dates_and_mobile(self):
+        errors = []
+        self.page.on("pageerror", lambda error: errors.append(str(error)))
+        self.page.set_viewport_size({"width": 1440, "height": 1000})
+        self.page.goto(self.origin + "/documents")
+        expect(self.page.locator('[data-menu-group="public"] [data-route="documents"]')).to_be_visible()
+        expect(self.page.locator('[data-route="wiki"]')).to_have_count(0)
+        self.page.get_by_role("button", name="새 폴더", exact=True).click()
+        self.page.get_by_label("폴더 제목", exact=True).fill("회사 소개 자료")
+        self.page.get_by_label("내용 설명", exact=True).fill("회사 소개서, 발표 자료와 브랜드 이미지를 모아 둡니다.")
+        self.page.get_by_role("button", name="폴더 만들기", exact=True).click()
+        expect(self.page.locator(".library-folder-heading")).to_contain_text("회사 소개 자료")
+        output = BytesIO()
+        Image.new("RGB", (60, 40), "#23745c").save(output, format="PNG")
+        uploads = [{"name": "브랜드 이미지.png", "mimeType": "image/png", "buffer": output.getvalue()},
+                   {"name": "회사 소개서.pdf", "mimeType": "application/pdf", "buffer": b"%PDF original"},
+                   {"name": "제품 발표 자료.pptx", "mimeType": "application/octet-stream", "buffer": b"PK original pptx"}]
+        self.page.locator("[data-file-input]").set_input_files(uploads)
+        expect(self.page.locator(".library-table tbody tr")).to_have_count(3)
+        expect(self.page.locator("[data-notice]")).to_contain_text("3개 파일을 업로드했습니다.")
+        expect(self.page.locator(".library-preview img")).to_have_count(1)
+        dates = self.page.locator(".library-file-date time").evaluate_all("nodes => nodes.map(node => [node.dateTime, node.textContent])")
+        self.assertTrue(all(date[0].endswith("+00:00") and date[1].strip() for date in dates))
+        with self.page.expect_download() as download:
+            self.page.get_by_role("link", name="제품 발표 자료.pptx 다운로드", exact=True).click()
+        self.assertEqual(Path(download.value.path()).read_bytes(), b"PK original pptx")
+        self.assertEqual(download.value.suggested_filename, "제품 발표 자료.pptx")
+        self.page.reload()
+        expect(self.page.locator(".library-table tbody tr")).to_have_count(3)
+        self.assertEqual(self.page.locator(".library-file-date time").evaluate_all("nodes => nodes.map(node => [node.dateTime, node.textContent])"), dates)
+        self.page.get_by_role("button", name="폴더 수정", exact=True).click()
+        self.page.get_by_label("폴더 제목", exact=True).fill("팀 공유 자료")
+        self.page.get_by_role("button", name="변경 저장", exact=True).click()
+        expect(self.page.locator(".library-folder-heading h3")).to_have_text("팀 공유 자료")
+        self.page.get_by_role("button", name="폴더 삭제", exact=True).click()
+        expect(self.page.locator("[data-notice]")).to_contain_text("파일을 먼저 삭제")
+        self.page.get_by_role("button", name="새 폴더", exact=True).click()
+        self.page.get_by_label("폴더 제목", exact=True).fill("운영 문서")
+        self.page.get_by_label("내용 설명", exact=True).fill("팀 운영에 필요한 안내 문서")
+        self.page.get_by_role("button", name="폴더 만들기", exact=True).click()
+        expect(self.page.locator(".library-empty-files")).to_be_visible()
+        self.page.locator(".library-folder").filter(has_text="팀 공유 자료").click()
+        expect(self.page.locator(".library-table tbody tr")).to_have_count(3)
+        for width in [1440, 390]:
+            self.page.set_viewport_size({"width": width, "height": 1000})
+            self.assertTrue(self.page.evaluate("document.documentElement.scrollWidth <= innerWidth"))
+            if os.getenv("GAI_ERP_SCREENSHOT_DIR"):
+                self.page.screenshot(path=str(Path(os.environ["GAI_ERP_SCREENSHOT_DIR"]) / f"documents-{width}.png"), full_page=True)
+        self.page.remove_listener("dialog", self.dismiss_dialog)
+        self.page.on("dialog", lambda dialog: dialog.accept())
+        self.page.get_by_role("button", name="제품 발표 자료.pptx 삭제", exact=True).click()
+        expect(self.page.locator(".library-table tbody tr")).to_have_count(2)
+        self.assertEqual(errors, [])
+
+    def test_document_library_drop_partial_failure_retry_and_navigation(self):
+        self.page.goto(self.origin + "/documents")
+        self.page.get_by_role("button", name="새 폴더", exact=True).click()
+        self.page.get_by_label("폴더 제목", exact=True).fill("업로드 재시도")
+        self.page.get_by_role("button", name="폴더 만들기", exact=True).click()
+        expect(self.page.locator(".library-dropzone")).to_be_visible()
+        pattern = "**/api/documents/folders/*/files?*"
+        self.page.route(pattern, lambda route: route.fulfill(status=503, content_type="application/json", body='{"detail":"Temporary upload failure"}') if "retry.txt" in route.request.url else route.continue_())
+        self.page.locator("[data-dropzone]").evaluate("""node => {
+            const data = new DataTransfer();
+            data.items.add(new File(['first'], 'first.txt'));
+            data.items.add(new File(['retry'], 'retry.txt'));
+            node.dispatchEvent(new DragEvent('drop', {dataTransfer: data, bubbles: true, cancelable: true}));
+        }""")
+        expect(self.page.locator(".library-table tbody tr")).to_have_count(1)
+        expect(self.page.locator("[data-upload-errors]")).to_contain_text("retry.txt")
+        self.page.unroute(pattern)
+        self.page.get_by_role("button", name="실패한 파일 다시 시도", exact=True).click()
+        expect(self.page.locator(".library-table tbody tr")).to_have_count(2)
+        expect(self.page.locator("[data-upload-errors]")).to_be_hidden()
+        self.page.locator('[data-route="meetings"]').click()
+        expect(self.page.locator(".document-workspace")).to_be_visible()
+        self.page.locator('[data-route="documents"]').click()
+        expect(self.page.locator(".library-table tbody tr")).to_have_count(2)
 
     def test_chat_and_receipt_clipboard_images_use_attachment_lists(self):
         self.page.goto(self.origin + "/chat")

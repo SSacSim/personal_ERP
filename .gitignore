@@ -49,3 +49,7 @@ vault/RemoteWork/**
 # Shared Pomodoro execution history is local workspace data.
 vault/Pomodoro/**
 !vault/Pomodoro/.gitkeep
+
+# Shared document folders and uploaded originals are local workspace data.
+vault/Documents/**
+!vault/Documents/.gitkeep

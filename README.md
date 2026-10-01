@@ -35,7 +35,7 @@ C:\Users\sim\anaconda3\envs\gai_erp\python.exe run.py
 왼쪽 메뉴에서 **PRIVATE · 나의 업무**와 **PUBLIC · 함께 쓰는 공간**을 구분합니다.
 
 - **Private**: 작업 타임라인, 할 일. 로그인 계정마다 등록·조회·수정·삭제하며 대시보드의 할 일과 진행 작업도 본인 기록만 집계합니다. 자동 이월, 순서 변경, 하위 작업, 주간 보고서에도 같은 기준을 적용합니다. 관리자도 자신의 개인 기록만 조회합니다.
-- **Public**: 캘린더, 연차·반차·재택, 뽀모도로 실행 기록, 프로젝트, 팀 채팅, 영수증, 재택근무 기록, 회의록, 위키, Info. 로그인 사용자들이 함께 조회합니다. 대시보드의 일정·회의·부재·프로젝트도 공용입니다.
+- **Public**: 캘린더, 연차·반차·재택, 뽀모도로 실행 기록, 프로젝트, 팀 채팅, 영수증, 재택근무 기록, 회의록, 자료실, Info. 로그인 사용자들이 함께 조회합니다. 대시보드의 일정·회의·부재·프로젝트도 공용입니다.
 
 개인 기록은 담당자 이름과 별개로 계정의 고유 `user_id`를 Obsidian frontmatter에 저장합니다. 이름이 같거나 담당자를 수정해도 소유 계정은 바뀌지 않습니다. 등록 계정이 없는 기존 작업·할 일·주간 보고서는 최초 전환 시 admin 계정에 보관하며 기존 내용·경로·기록 시간은 유지합니다.
 
@@ -60,9 +60,9 @@ C:\Users\sim\anaconda3\envs\gai_erp\python.exe run.py
 - `/attendance`: 연차·오전/오후 반차·재택 일정 등록 및 캘린더 연동
 - `/tasks`: JIRA 형태의 작업 등록 및 start/end date 기반 작업바 표시
 - `/todos`: 오늘 TODO, 미완료 항목 자동 이월, 주간 보고서 생성
-- `/projects`: 회사별 프로젝트 생성, 프로젝트별 회의록 및 Wiki 관리
+- `/projects`: 회사별 프로젝트 생성, 프로젝트별 회의록, 기록 및 파일 관리
 - `/meetings`: 회의록 작성·조회·수정 및 Markdown 저장
-- `/wiki`: 운영 지식과 절차 문서 작성·조회·수정
+- `/documents`: 폴더별 공용 문서와 파일 업로드·다운로드
 - `/login`: 로그인
 - `/admin`: 관리자 전용 사용자 계정 등록·조회
 - `/chat`: 로그인 계정으로 참여하는 팀 채팅, 메시지 및 파일 공유
@@ -147,13 +147,23 @@ ERP 서버는 `config.yaml`의 `vault.path`를 사용합니다. 등록 정보는
 
 같은 ERP 서버에서 `POST /api/receipts`로 등록하고 `GET /api/receipts`로 목록을 조회합니다. 여러 사진은 `multipart/form-data`의 `metadata`(등록 시 `submission_id`, `content`, 선택적 `registrant`를 담은 JSON 문자열)와 반복되는 `images` 파일 필드로 전송합니다. 응답의 `images` 배열에 사진별 파일명·크기·원본 URL을 제공하며 `GET /api/receipts/{id}/images/{image_id}`로 개별 원본을 조회합니다. URL에 `?download=true`를 붙이면 다운로드합니다. `PATCH /api/receipts/{id}`도 같은 형식으로 내용(`metadata.content`)과 선택적인 사진 전체 교체를 지원합니다. 기존 단일 사진 JSON 요청(`filename`, `image_base64`), 내용만 수정하는 JSON 요청, 대표 사진 조회(`GET /api/receipts/{id}/image`)도 호환됩니다. `DELETE /api/receipts/{id}`는 영수증과 모든 사진을 삭제합니다. 업데이트 시 `python -m pip install -r requirements.txt`로 업로드 처리 의존성을 설치합니다.
 
-## 회의록·위키 수정
+## 자료실
 
-회의록 또는 위키 메뉴에서 목록의 **수정** 버튼을 누르거나, 문서를 선택한 뒤 오른쪽 **수정** 버튼을 누릅니다. 기존 내용과 이미지를 편집하고 하단의 **회의록 수정 / 위키 수정** 버튼으로 저장합니다. **취소**하면 저장된 문서로 돌아가며, 새 문서는 목록 상단의 **새 회의록 / 새 위키**에서 작성합니다.
+PUBLIC의 **자료실**(`/documents`)에서 **새 폴더**를 누르고 제목(필수, 140자)과 내용 설명(선택, 3,000자)을 입력합니다. 폴더를 선택하면 설명과 파일 목록을 확인하고 폴더 제목·설명을 수정할 수 있습니다.
+
+**파일 업로드** 또는 드래그 앤 드롭으로 이미지, PDF, PPT/PPTX, 엑셀, 압축 파일 등 형식 제한 없이 여러 파일을 올립니다. 파일당 최대 1GB(1,024MB)이며 같은 이름의 파일도 별도로 보관합니다. 업로드 진행 상황과 실패한 파일을 표시하고 실패한 항목만 다시 시도할 수 있습니다. 파일은 최신 업로드 순으로 표시하고 이름, 크기, **업로드 일시(한국 시간)**를 확인할 수 있습니다. PNG·JPG·GIF·WEBP는 이미지 미리보기도 제공합니다. 파일명을 누르거나 **다운로드**를 선택하면 원본을 내려받습니다.
+
+로그인한 사용자들이 폴더와 파일을 함께 조회·관리합니다. 파일은 확인 후 삭제하며, 폴더는 내부 파일을 모두 삭제한 뒤 삭제할 수 있습니다. 폴더 정보와 파일별 업로드 시각은 `vault/Documents/documents.sqlite3`, 원본은 `vault/Documents/Uploads/`에 보관합니다. 새로고침·서버 재시작 후에도 유지하며 Git에는 포함하지 않습니다.
+
+기존 위키 메뉴·화면·API는 제거했습니다. 기존 `vault/Wiki` 원본 노트는 디스크에 보존하지만 앱과 상담봇 검색에는 노출하지 않습니다.
+
+## 회의록 수정
+
+회의록 메뉴에서 목록의 **수정** 버튼을 누르거나, 문서를 선택한 뒤 오른쪽 **수정** 버튼을 누릅니다. 기존 내용과 이미지를 편집하고 하단의 **회의록 수정** 버튼으로 저장합니다. **취소**하면 저장된 문서로 돌아가며, 새 문서는 목록 상단의 **새 회의록**에서 작성합니다.
 
 수정 시 기존 문서 ID, 프로젝트 연결, 첨부 이미지와 변경 이력을 유지합니다. 저장 요청이 실패하면 입력 내용이 남아 있어 다시 시도할 수 있습니다.
 
-회의록의 **안건·회의 내용**, 위키 **본문**, 프로젝트 **기록**에서 **Ctrl+V**(맥은 **⌘V**)로 복사한 이미지를 붙여넣으면 **이미지 삽입** 버튼과 같은 방식으로 원본을 서버에 저장합니다. 여러 이미지를 순서대로 업로드하며 저장·새로고침·재수정 후에도 본문 위치와 이미지 크기를 유지합니다. JPG·PNG·GIF·WEBP, 이미지당 10MB까지 지원합니다. 업로드 중이거나 실패한 이미지가 있으면 문서 저장을 막고, 실패한 이미지에는 **다시 시도 / 삭제** 버튼을 표시합니다. 웹 문서에서 복사한 이미지와 텍스트도 함께 붙여넣을 수 있으며 원본을 읽을 수 없는 이미지는 파일로 직접 첨부합니다.
+회의록의 **안건·회의 내용**, 프로젝트 **기록**에서 **Ctrl+V**(맥은 **⌘V**)로 복사한 이미지를 붙여넣으면 **이미지 삽입** 버튼과 같은 방식으로 원본을 서버에 저장합니다. 여러 이미지를 순서대로 업로드하며 저장·새로고침·재수정 후에도 본문 위치와 이미지 크기를 유지합니다. JPG·PNG·GIF·WEBP, 이미지당 10MB까지 지원합니다. 업로드 중이거나 실패한 이미지가 있으면 문서 저장을 막고, 실패한 이미지에는 **다시 시도 / 삭제** 버튼을 표시합니다. 웹 문서에서 복사한 이미지와 텍스트도 함께 붙여넣을 수 있으며 원본을 읽을 수 없는 이미지는 파일로 직접 첨부합니다.
 
 팀 채팅 작성창과 영수증 등록 화면에서도 Ctrl+V로 이미지를 기존 첨부 목록에 추가할 수 있습니다. 프로젝트 **자료**의 업로드 영역에서도 이미지 붙여넣기를 지원합니다. 각 화면의 기존 파일 크기·개수 제한을 적용하며, 재택근무 기록의 이미지 붙여넣기도 계속 사용할 수 있습니다.
 
@@ -188,7 +198,7 @@ ERP 서버는 `config.yaml`의 `vault.path`를 사용합니다. 등록 정보는
 
 ## 저장 방식
 
-프로젝트, 작업, 일정 등 업무 데이터는 `vault/` 아래 Markdown 노트로 저장됩니다. 각 노트는 YAML 스타일 frontmatter를 포함하므로 Obsidian에서 바로 열 수 있고, LLM Wiki 형태로 폴더별 검색과 요약이 가능합니다. 회의록과 Wiki 첨부 이미지는 `vault/Assets`에 저장됩니다.
+프로젝트, 작업, 일정 등 업무 데이터는 `vault/` 아래 Markdown 노트로 저장됩니다. 각 노트는 YAML 스타일 frontmatter를 포함하므로 Obsidian에서 바로 열 수 있고, LLM Wiki 형태로 폴더별 검색과 요약이 가능합니다. 회의록과 프로젝트 기록의 첨부 이미지는 `vault/Assets`에 저장됩니다.
 
 팀 채팅은 동시 전송과 대화 순서를 보장하기 위해 `vault/Chat/chat.sqlite3`에 메시지와 계정별 참여 정보를 저장합니다. 공유 파일은 `vault/Chat/Uploads`에 저장하며, 채팅 데이터는 Git에서 제외됩니다. 기존 대화는 로그인 도입 후에도 유지됩니다.
 
@@ -200,7 +210,9 @@ ERP 서버는 `config.yaml`의 `vault.path`를 사용합니다. 등록 정보는
 - `GET /api/todos`, `POST /api/todos`, `PATCH /api/todos/{todo_id}`, `POST /api/todos/weekly-report`
 - `GET /api/projects`, `POST /api/projects`, `PATCH /api/projects/{project_id}`
 - `GET /api/meetings`, `POST /api/meetings`
-- `GET /api/wiki`, `POST /api/wiki`
+- `GET/POST /api/documents/folders`, `PATCH/DELETE /api/documents/folders/{id}`
+- `GET/POST /api/documents/folders/{id}/files`, `DELETE /api/documents/files/{id}`
+- `GET /api/documents/files/{id}/download`, `GET /api/documents/files/{id}/preview`
 - `GET /api/id-info`, `POST /api/id-info`, `PATCH /api/id-info/{id}`, `DELETE /api/id-info/{id}`
 - `GET /api/id-info/{id}/password`
 - `POST /api/auth/login`, `GET /api/auth/me`, `POST /api/auth/logout`
