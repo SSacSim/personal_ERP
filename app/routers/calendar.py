@@ -2,6 +2,7 @@ from datetime import date
 
 from fastapi import APIRouter, HTTPException, Query
 
+from app.calendar_holidays import holidays_in_range
 from app.models import CalendarEventCreate, CalendarEventUpdate
 from app.storage import vault
 
@@ -16,8 +17,12 @@ def list_events(month: str | None = None, target_date: date | None = Query(defau
         raise HTTPException(status_code=422, detail="조회 시작일과 종료일을 함께 입력해 주세요.")
     if start_date and end_date and end_date < start_date:
         raise HTTPException(status_code=422, detail="조회 종료일은 시작일보다 빠를 수 없습니다.")
-    return {"items": vault.list_calendar_events(month=month, target_date=target_date,
-                                                start_date=start_date, end_date=end_date)}
+    return {
+        "items": vault.list_calendar_events(month=month, target_date=target_date,
+                                             start_date=start_date, end_date=end_date),
+        # The calendar requests its full visible range, including adjacent months.
+        "holidays": holidays_in_range(start_date, end_date) if start_date and end_date else {},
+    }
 
 
 @router.post("/events", status_code=201)

@@ -492,7 +492,7 @@ async function renderCalendar() {
     start_date: toDateInputValue(calendarLayout.start),
     end_date: toDateInputValue(addDays(calendarLayout.start, calendarLayout.totalCells - 1)),
   });
-  const { items } = await api(`/api/calendar?${query}`);
+  const { items, holidays = {} } = await api(`/api/calendar?${query}`);
   const multiDayLayout = getMultiDayLayout(items, calendarLayout);
   const eventsByDate = calendarEventsByDate(items, calendarLayout);
   view.innerHTML = `
@@ -506,10 +506,10 @@ async function renderCalendar() {
         <button class="secondary" id="next-month" type="button" aria-label="다음 달">다음</button>
       </div>
       <div class="calendar-weekdays" aria-hidden="true">
-        ${["월", "화", "수", "목", "금", "토", "일"].map((day) => `<div class="day-name">${day}</div>`).join("")}
+        ${["월", "화", "수", "목", "금", "토", "일"].map((day, index) => `<div class="day-name ${index === 5 ? "is-saturday" : index === 6 ? "is-sunday" : ""}">${day}</div>`).join("")}
       </div>
       <div class="calendar-grid" style="${calendarGridStyle(multiDayLayout)}">
-        ${calendarCells(calendarMonth, eventsByDate, calendarLayout, multiDayLayout)}
+        ${calendarCells(calendarMonth, eventsByDate, calendarLayout, multiDayLayout, holidays)}
       </div>
     </section>
     ${calendarDialogDate ? calendarEventDialog(calendarDialogDate, eventsByDate[calendarDialogDate] || []) : ""}
@@ -3844,7 +3844,7 @@ function taskBar(type, start, end, rangeStart, label, task = null) {
   `;
 }
 
-function calendarCells(monthDate, eventsByDate, layout, multiDayLayout) {
+function calendarCells(monthDate, eventsByDate, layout, multiDayLayout, holidays = {}) {
   const today = toDateInputValue(new Date());
   const rangeEventsByDate = calendarRangeSegmentsByDate(multiDayLayout.segments, layout);
   const cells = [];
@@ -3852,6 +3852,8 @@ function calendarCells(monthDate, eventsByDate, layout, multiDayLayout) {
     const cellDate = addDays(layout.start, index);
     const value = toDateInputValue(cellDate);
     const inMonth = cellDate.getMonth() === monthDate.getMonth();
+    const weekendClass = cellDate.getDay() === 6 ? "is-saturday" : cellDate.getDay() === 0 ? "is-sunday" : "";
+    const holidayName = holidays[value] || "";
     const events = eventsByDate[value] || [];
     const rangeEvents = rangeEventsByDate[value] || [];
     const singleDayEvents = events.filter((event) => !isMultiDayEvent(event));
@@ -3861,8 +3863,11 @@ function calendarCells(monthDate, eventsByDate, layout, multiDayLayout) {
     const row = Math.floor(index / 7) + 1;
     const weekLanes = multiDayLayout.weekLaneCounts[row - 1] || 0;
     cells.push(`
-      <button class="day ${inMonth ? "" : "is-muted"} ${value === selectedCalendarDate ? "is-selected" : ""} ${value === today ? "is-today" : ""}" type="button" data-date="${value}" style="grid-column:${column};grid-row:${row};--week-lanes:${weekLanes};">
-        <span class="day-number">${cellDate.getDate()}</span>
+      <button class="day ${weekendClass} ${holidayName ? "is-holiday" : ""} ${inMonth ? "" : "is-muted"} ${value === selectedCalendarDate ? "is-selected" : ""} ${value === today ? "is-today" : ""}" type="button" data-date="${value}" style="grid-column:${column};grid-row:${row};--week-lanes:${weekLanes};">
+        <span class="day-date">
+          <span class="day-number">${cellDate.getDate()}</span>
+          ${holidayName ? `<span class="day-holiday" title="${escapeHtml(holidayName)}">${escapeHtml(holidayName)}</span>` : ""}
+        </span>
         ${weekLanes ? `<span class="day-range-events" style="--week-lanes:${weekLanes};">${rangeEvents.map(rangeSegmentChip).join("")}</span>` : ""}
         ${
           visibleEvents.length || hiddenCount

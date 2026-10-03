@@ -1366,6 +1366,8 @@ textarea.long-textarea {
 }
 
 .calendar-panel {
+  --calendar-saturday: #3166a6;
+  --calendar-holiday: #bf4343;
   height: 100%;
   min-height: 0;
   display: flex;
@@ -1424,6 +1426,14 @@ textarea.long-textarea {
   text-align: center;
 }
 
+.calendar-weekdays .day-name.is-saturday {
+  color: var(--calendar-saturday);
+}
+
+.calendar-weekdays .day-name.is-sunday {
+  color: var(--calendar-holiday);
+}
+
 .day {
   min-height: 0;
   height: 100%;
@@ -1434,7 +1444,7 @@ textarea.long-textarea {
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 8px;
-  background: white;
+  background: var(--day-background, white);
   color: var(--text);
   cursor: pointer;
   overflow: hidden;
@@ -1443,12 +1453,49 @@ textarea.long-textarea {
 
 .day:hover {
   border-color: var(--focus);
-  background: var(--accent-soft);
+  background: var(--day-hover-background, var(--accent-soft));
 }
 
 .day.is-muted {
-  background: var(--surface-subtle);
+  background: var(--day-muted-background, var(--surface-subtle));
   color: #9aa4b2;
+}
+
+.day.is-saturday {
+  --day-color: var(--calendar-saturday);
+  --day-background: #f3f7ff;
+  --day-hover-background: #e8f0ff;
+  --day-muted-background: #f0f3f8;
+}
+
+.day.is-sunday,
+.day.is-holiday {
+  --day-color: var(--calendar-holiday);
+  --day-background: #fff5f4;
+  --day-hover-background: #ffe9e7;
+  --day-muted-background: #f8f0ef;
+}
+
+.day-date {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  flex-shrink: 0;
+  color: var(--day-color, inherit);
+}
+
+.day.is-muted .day-date {
+  opacity: 0.6;
+}
+
+.day-holiday {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .day.is-selected {
@@ -1458,6 +1505,7 @@ textarea.long-textarea {
 }
 
 .day-number {
+  flex-shrink: 0;
   width: fit-content;
   min-width: 22px;
   min-height: 22px;
@@ -3180,7 +3228,6 @@ input[type="checkbox"] { accent-color: var(--accent); }
 .day { border-color: #e9eeea; border-radius: 7px; padding: 10px; }
 .day-number { min-width: 25px; min-height: 25px; font-size: 12px; font-weight: 600; }
 .day-name { font-weight: 500; font-size: 11px; }
-.day-name:last-child { color: #c1847f; }
 .chat-panel { border-radius: 16px; box-shadow: 0 16px 50px rgba(23, 41, 32, 0.14); }
 .chat-panel-head { padding: 18px; background: var(--surface-subtle); }
 .chat-panel-head span { font-size: 10px; }

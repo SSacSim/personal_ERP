@@ -72,6 +72,43 @@ class CalendarRangeTests(unittest.TestCase):
         legacy = self.vault.write("calendar_event", "기존 일정", {"title": "기존 일정", "date": "2026-10-02"}, "# 기존 일정")
         self.assertEqual(self.ids(start_date="2026-08-31", end_date="2026-10-04"), [legacy.metadata["id"]])
 
+    def test_visible_range_includes_holidays_without_adding_calendar_events(self):
+        event = self.create("2026-10-05")
+        response = self.client.get("/api/calendar", params={
+            "start_date": "2026-09-21", "end_date": "2026-10-25",
+        })
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual([item["id"] for item in data["items"]], [event])
+        self.assertEqual(set(data["holidays"]), {
+            "2026-09-24", "2026-09-25", "2026-09-26", "2026-10-03", "2026-10-05", "2026-10-09",
+        })
+        self.assertIn("추석", data["holidays"]["2026-09-25"])
+        self.assertIn("대체", data["holidays"]["2026-10-05"])
+
+    def test_lunar_new_year_and_substitute_holidays_change_with_year(self):
+        for year, expected in [
+            (2026, {"2026-02-16", "2026-02-17", "2026-02-18"}),
+            (2027, {"2027-02-06", "2027-02-07", "2027-02-08", "2027-02-09"}),
+        ]:
+            with self.subTest(year=year):
+                response = self.client.get("/api/calendar", params={
+                    "start_date": f"{year}-02-01", "end_date": f"{year}-02-28",
+                })
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(set(response.json()["holidays"]), expected)
+
+    def test_holidays_include_both_years_and_exact_range_boundaries(self):
+        response = self.client.get("/api/calendar", params={
+            "start_date": "2026-12-25", "end_date": "2027-01-01",
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(set(response.json()["holidays"]), {"2026-12-25", "2027-01-01"})
+        response = self.client.get("/api/calendar", params={
+            "start_date": "2026-12-26", "end_date": "2026-12-31",
+        })
+        self.assertEqual(response.json()["holidays"], {})
+
     def test_invalid_or_incomplete_ranges_are_rejected(self):
         for params in [
             {"start_date": "2026-09-28"}, {"end_date": "2026-10-04"},
