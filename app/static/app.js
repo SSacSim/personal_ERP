@@ -6,6 +6,7 @@ import { mountRemoteWork } from "./remote-work.js";
 import { mountDocuments } from "./documents.js?v=20261001-1gb";
 import { mountAttendance } from "./attendance.js";
 import { mountManuals } from "./manuals.js?v=20261019-manuals";
+import { setupCalendarDrag } from "./calendar-drag.js?v=20261019";
 import { requireSession, setupAccountBar, currentUser, userStorageKey } from "./auth-state.js";
 import { setupSidebarOrder } from "./sidebar-order.js?v=20260928";
 import { setupInlineImageUpload, validateInlineImage } from "./inline-image-upload.js";
@@ -51,6 +52,7 @@ let calendarDialogDate = null;
 let calendarDetailEventId = null;
 let calendarEditEventId = null;
 let calendarPendingDeleteId = null;
+let calendarRenderSequence = 0;
 let taskCreateContext = null;
 let taskDetailId = null;
 let taskDetailEditingId = null;
@@ -492,7 +494,8 @@ async function renderDashboard() {
   `;
 }
 
-async function renderCalendar() {
+async function renderCalendar(moveMessage = "") {
+  const sequence = ++calendarRenderSequence;
   const monthKey = `${calendarMonth.getFullYear()}-${pad(calendarMonth.getMonth() + 1)}`;
   const calendarLayout = getCalendarLayout(calendarMonth);
   const query = new URLSearchParams({
@@ -500,6 +503,7 @@ async function renderCalendar() {
     end_date: toDateInputValue(addDays(calendarLayout.start, calendarLayout.totalCells - 1)),
   });
   const { items, holidays = {} } = await api(`/api/calendar?${query}`);
+  if (sequence !== calendarRenderSequence || currentRoute() !== "calendar") return;
   const multiDayLayout = getMultiDayLayout(items, calendarLayout);
   const eventsByDate = calendarEventsByDate(items, calendarLayout);
   view.innerHTML = `
@@ -512,6 +516,7 @@ async function renderCalendar() {
         </div>
         <button class="secondary" id="next-month" type="button" aria-label="다음 달">다음</button>
       </div>
+      <p class="calendar-drag-feedback" data-calendar-drag-feedback role="status">${escapeHtml(moveMessage || "일정을 다른 날짜로 끌어놓으면 날짜가 자동으로 변경됩니다.")}</p>
       <div class="calendar-weekdays" aria-hidden="true">
         ${["월", "화", "수", "목", "금", "토", "일"].map((day, index) => `<div class="day-name ${index === 5 ? "is-saturday" : index === 6 ? "is-sunday" : ""}">${day}</div>`).join("")}
       </div>
@@ -642,6 +647,22 @@ async function renderCalendar() {
   if (!calendarDetailEventId || calendarEditEventId) {
     document.querySelector("#event-form input[name='title']")?.focus();
   }
+  const panel = document.querySelector(".calendar-panel");
+  setupCalendarDrag(panel, {
+    items,
+    isActive: () => panel.isConnected && currentRoute() === "calendar",
+    save: (id, dates) => api(`/api/calendar/events/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(dates) }),
+    onMoved: async (saved, target) => {
+      selectedCalendarDate = target;
+      calendarMonth = startOfMonth(new Date(`${target}T00:00:00`));
+      calendarDialogDate = null;
+      calendarDetailEventId = null;
+      calendarEditEventId = null;
+      calendarPendingDeleteId = null;
+      const range = eventStartDate(saved) === eventEndDate(saved) ? eventStartDate(saved) : `${eventStartDate(saved)} ~ ${eventEndDate(saved)}`;
+      await renderCalendar(`‘${saved.title}’ 일정을 ${range}(으)로 이동했습니다.`);
+    },
+  });
 }
 
 async function renderTasks() {
@@ -3957,7 +3978,7 @@ function calendarCells(monthDate, eventsByDate, layout, multiDayLayout, holidays
         ${
           visibleEvents.length || hiddenCount
             ? `<span class="day-events">
-                ${visibleEvents.map((event) => `<span class="event-chip category-${categoryClass(event.category)}">${escapeHtml(event.title)}</span>`).join("")}
+                ${visibleEvents.map((event) => `<span class="event-chip category-${categoryClass(event.category)}" draggable="true" data-calendar-drag-id="${escapeHtml(eventKey(event))}" title="${escapeHtml(event.title)} · 다른 날짜로 끌어서 이동">${escapeHtml(event.title)}</span>`).join("")}
                 ${hiddenCount ? `<span class="day-more">+${hiddenCount}건</span>` : ""}
               </span>`
             : ""
@@ -3991,7 +4012,7 @@ function calendarRangeSegmentsByDate(segments, layout) {
 function rangeSegmentChip(segment) {
   const className = categoryClass(segment.item.category);
   return `
-    <span class="range-chip category-${className} ${segment.startsEvent ? "starts-range" : ""} ${segment.endsEvent ? "ends-range" : ""}" style="--event-lane:${segment.lane};" title="${escapeHtml(segment.item.title)} · ${escapeHtml(eventStartDate(segment.item))} ~ ${escapeHtml(eventEndDate(segment.item))}">
+    <span class="range-chip category-${className} ${segment.startsEvent ? "starts-range" : ""} ${segment.endsEvent ? "ends-range" : ""}" draggable="true" data-calendar-drag-id="${escapeHtml(eventKey(segment.item))}" style="--event-lane:${segment.lane};" title="${escapeHtml(segment.item.title)} · ${escapeHtml(eventStartDate(segment.item))} ~ ${escapeHtml(eventEndDate(segment.item))} · 다른 날짜로 끌어서 이동">
       <span>${escapeHtml(segment.item.title)}</span>
     </span>
   `;
