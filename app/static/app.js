@@ -5,6 +5,7 @@ import { mountPomodoro, mountPomodoroIndicator } from "./pomodoro.js";
 import { mountRemoteWork } from "./remote-work.js";
 import { mountDocuments } from "./documents.js?v=20261001-1gb";
 import { mountAttendance } from "./attendance.js";
+import { mountManuals } from "./manuals.js?v=20261019-manuals";
 import { requireSession, setupAccountBar, currentUser, userStorageKey } from "./auth-state.js";
 import { setupSidebarOrder } from "./sidebar-order.js?v=20260928";
 import { setupInlineImageUpload, validateInlineImage } from "./inline-image-upload.js";
@@ -21,6 +22,7 @@ let disposePomodoro = null;
 let disposeRemoteWork = null;
 let disposeAttendance = null;
 let disposeDocuments = null;
+let disposeManuals = null;
 let documentRenderSequence = 0;
 let meetingCompanies = [];
 const pageTitle = document.querySelector("#page-title");
@@ -34,6 +36,7 @@ const titles = {
   todos: "할 일",
   projects: "프로젝트",
   meetings: "회의록",
+  manuals: "매뉴얼",
   documents: "자료실",
   chat: "팀 채팅",
   receipts: "영수증",
@@ -365,6 +368,8 @@ function renderRoute(route) {
   disposeRemoteWork = null;
   disposeDocuments?.();
   disposeDocuments = null;
+  disposeManuals?.();
+  disposeManuals = null;
   disposeAttendance?.();
   disposeAttendance = null;
   if (route === "calendar") {
@@ -428,6 +433,7 @@ function renderRoute(route) {
     todos: renderTodos,
     projects: renderProjects,
     meetings: renderMeetings,
+    manuals: async () => { disposeManuals = mountManuals(view); },
     documents: async () => { disposeDocuments = mountDocuments(view); },
     chat: async () => { disposeTeamChat = mountTeamChat(view); },
     receipts: async () => { disposeReceipts = mountReceipts(view); },

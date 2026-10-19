@@ -9,6 +9,7 @@
 - `vault/Projects`: 프로젝트 노트
 - `vault/Reports`: 주간 보고서
 - `vault/Meetings`: 회의록 노트
+- `vault/Manuals`: 공용 업무 매뉴얼, 표준 항목과 버전별 변경 요약·수정자·검토일
 - `vault/Wiki`: 프로젝트 목표, 운영 규칙, 의사결정 기록
 - `vault/Assets`: 회의록과 Wiki 첨부 이미지
 

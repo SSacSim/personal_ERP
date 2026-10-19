@@ -19,6 +19,7 @@ FOLDERS = {
     "todo": "Todos",
     "project": "Projects",
     "meeting": "Meetings",
+    "manual": "Manuals",
     "project_file": "Files",
     "project_record": "Records",
     "report": "Reports",

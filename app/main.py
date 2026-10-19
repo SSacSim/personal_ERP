@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from app.config import APP_NAME
 from app import auth
 from app.routers import auth as auth_routes
-from app.routers import assets, attendance, calendar, chat, companies, dashboard, documents, id_info, meetings, pomodoro, project_files, project_records, projects, receipts, remote_work, tasks, team_chat, todos
+from app.routers import assets, attendance, calendar, chat, companies, dashboard, documents, id_info, manuals, meetings, pomodoro, project_files, project_records, projects, receipts, remote_work, tasks, team_chat, todos
 from app.storage import vault
 
 
@@ -28,6 +28,7 @@ app.include_router(tasks.router)
 app.include_router(todos.router)
 app.include_router(projects.router)
 app.include_router(meetings.router)
+app.include_router(manuals.router)
 app.include_router(companies.router)
 app.include_router(project_files.router)
 app.include_router(project_records.router)
@@ -92,6 +93,6 @@ def receipt_upload():
 
 @app.get("/{page}", include_in_schema=False)
 def page(page: str):
-    if page in {"dashboard", "calendar", "attendance", "tasks", "todos", "projects", "meetings", "documents", "chat", "receipts", "id-info", "pomodoro", "remote-work"}:
+    if page in {"dashboard", "calendar", "attendance", "tasks", "todos", "projects", "meetings", "manuals", "documents", "chat", "receipts", "id-info", "pomodoro", "remote-work"}:
         return FileResponse(STATIC_DIR / "index.html")
     raise HTTPException(status_code=404, detail="not found")

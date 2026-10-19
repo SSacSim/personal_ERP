@@ -202,3 +202,41 @@ class ProjectFileUpload(BaseModel):
 
 class ChatQuestion(BaseModel):
     question: str = Field(min_length=1, max_length=1000)
+
+
+class ManualSections(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    purpose: str = Field(default="", max_length=10000)
+    scope: str = Field(default="", max_length=10000)
+    preparation: str = Field(default="", max_length=10000)
+    procedure: str = Field(default="", max_length=30000)
+    checklist: str = Field(default="", max_length=10000)
+    exceptions: str = Field(default="", max_length=10000)
+    references: str = Field(default="", max_length=10000)
+
+
+class ManualCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    title: str = Field(min_length=1, max_length=140)
+    category: str = Field(default="일반 업무", min_length=1, max_length=80)
+    owner: str = Field(min_length=1, max_length=80)
+    status: Literal["draft", "published", "archived"] = "draft"
+    review_cycle_days: Literal[30, 90, 180, 365] = 90
+    next_review_date: Date | None = None
+    sections: ManualSections = Field(default_factory=ManualSections)
+
+    @model_validator(mode="after")
+    def validate_published_sections(self) -> "ManualCreate":
+        if self.status == "published":
+            required = {"purpose": "목적과 완료 기준", "scope": "적용 범위와 담당 역할", "procedure": "단계별 업무 절차", "checklist": "완료 확인 체크리스트"}
+            missing = [label for key, label in required.items() if not getattr(self.sections, key)]
+            if missing:
+                raise ValueError("사용 중으로 저장하려면 다음 항목을 작성해 주세요: " + ", ".join(missing))
+        return self
+
+
+class ManualUpdate(ManualCreate):
+    version: int = Field(ge=1)
+    change_summary: str = Field(min_length=1, max_length=1000)
