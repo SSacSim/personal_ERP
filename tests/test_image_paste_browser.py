@@ -388,6 +388,138 @@ class ImagePasteBrowserTests(unittest.TestCase):
         expect(self.page.locator(".resource-reader")).to_contain_text("회의록 메뉴에서 수정한 내용")
         self.assertEqual(errors, [])
 
+    def open_project_for_autosave(self):
+        project = self.context.request.post(self.origin + "/api/projects", data={"name": "팝업 자동 저장 검증"}).json()
+        self.page.goto(self.origin + "/projects")
+        self.page.locator(f'[data-project-open="{project["id"]}"]').click()
+        expect(self.page.locator(".project-detail-dialog")).to_be_visible()
+        return project
+
+    def test_project_meeting_backdrop_saves_new_and_edited_content(self):
+        project = self.open_project_for_autosave()
+        meetings_url = self.origin + f'/api/meetings?project_id={project["id"]}'
+        self.page.locator("[data-project-resource-new]").click()
+        self.page.mouse.click(5, 5)
+        expect(self.page.locator(".project-detail-dialog")).to_have_count(0)
+        self.assertEqual(self.context.request.get(meetings_url).json()["items"], [])
+
+        self.page.locator(f'[data-project-open="{project["id"]}"]').click()
+        self.page.locator("[data-project-resource-new]").click()
+        self.page.locator("#project-resource-form input[name=title]").fill("자동 저장 회의")
+        self.page.locator("input[name=start_time]").fill("10:30")
+        self.page.locator("input[name=attendees]").fill("김하나, 이둘")
+        self.page.locator("[data-rich-editor=agenda]").fill("자동 저장 안건")
+        self.page.locator("[data-rich-editor=notes]").fill("팝업을 닫아도 남아야 하는 내용")
+        self.paste("[data-rich-editor=notes]")
+        expect(self.page.locator(".editor-rich-image")).to_have_count(1)
+        self.page.locator("#project-detail-title").click()
+        expect(self.page.locator("#project-resource-form")).to_be_visible()
+        self.assertEqual(self.context.request.get(meetings_url).json()["items"], [])
+        self.page.mouse.click(5, 5)
+        expect(self.page.locator(".project-detail-dialog")).to_have_count(0)
+        meeting, = self.context.request.get(meetings_url).json()["items"]
+        self.assertEqual(meeting["title"], "자동 저장 회의")
+        self.assertEqual(meeting["start_time"], "10:30")
+        self.assertEqual(meeting["attendees"], ["김하나", "이둘"])
+        self.assertEqual(len(meeting["images"]), 1)
+
+        self.page.reload()
+        self.page.locator(f'[data-project-open="{project["id"]}"]').click()
+        expect(self.page.locator(".resource-reader")).to_contain_text("자동 저장 안건")
+        expect(self.page.locator(".resource-reader img")).to_have_count(1)
+        self.page.locator("[data-project-resource-edit]").click()
+        self.page.locator("[data-rich-editor=notes]").press("Control+End")
+        self.page.keyboard.press("Enter")
+        self.page.keyboard.insert_text("바깥 클릭으로 수정 저장")
+        self.page.mouse.click(5, 5)
+        expect(self.page.locator(".project-detail-dialog")).to_have_count(0)
+        updated, = self.context.request.get(meetings_url).json()["items"]
+        self.assertEqual(updated["id"], meeting["id"])
+        self.assertIn("바깥 클릭으로 수정 저장", updated["body"])
+        self.assertIn("팝업을 닫아도 남아야 하는 내용", updated["body"])
+        self.assertEqual(len(updated["images"]), 1)
+
+        writes = []
+        self.page.on("request", lambda request: writes.append(request) if request.method in ("POST", "PATCH") else None)
+        self.page.locator(f'[data-project-open="{project["id"]}"]').click()
+        self.page.locator("[data-project-resource-edit]").click()
+        expect(self.page.locator("#project-resource-form")).to_be_visible()
+        self.page.mouse.click(5, 5)
+        expect(self.page.locator(".project-detail-dialog")).to_have_count(0)
+        self.assertEqual(writes, [])
+
+    def test_project_autosave_keeps_invalid_and_failed_content_for_retry(self):
+        project = self.open_project_for_autosave()
+        self.page.locator("[data-project-resource-new]").click()
+        self.page.locator("[data-rich-editor=notes]").fill("필수 입력이나 연결 오류에도 유지할 글")
+        self.page.mouse.click(5, 5)
+        expect(self.page.locator("#project-resource-form")).to_be_visible()
+        self.assertFalse(self.page.locator("input[name=title]").evaluate("element => element.validity.valid"))
+        self.page.locator("input[name=title]").fill("실패 후 재시도")
+        self.page.route("**/api/meetings", lambda route: route.fulfill(status=503, content_type="application/json", body='{"detail":"test save failure"}'), times=1)
+        self.page.mouse.click(5, 5)
+        expect(self.page.locator("[data-project-save-feedback]")).to_contain_text("작성 내용은 유지됩니다")
+        expect(self.page.locator("[data-rich-editor=notes]")).to_contain_text("필수 입력이나 연결 오류에도 유지할 글")
+        expect(self.page.get_by_role("button", name="회의록 저장", exact=True)).to_be_enabled()
+        self.page.mouse.click(5, 5)
+        expect(self.page.locator(".project-detail-dialog")).to_have_count(0)
+        meeting, = self.context.request.get(self.origin + f'/api/meetings?project_id={project["id"]}').json()["items"]
+        self.assertIn("필수 입력이나 연결 오류에도 유지할 글", meeting["body"])
+
+    def test_project_record_close_and_escape_save_without_duplicate_records(self):
+        project = self.open_project_for_autosave()
+        records_url = self.origin + f'/api/project-records?project_id={project["id"]}'
+        self.page.locator("[data-project-tab=records]").click()
+        self.page.locator("[data-rich-editor=content]").fill("닫기 버튼으로 자동 저장할 기록")
+        self.page.locator(".project-detail-head [data-project-detail-close]").click()
+        expect(self.page.locator(".project-detail-dialog")).to_have_count(0)
+        record, = self.context.request.get(records_url).json()["items"]
+        self.assertIn("닫기 버튼으로 자동 저장할 기록", record["body"])
+        self.page.locator(f'[data-project-open="{project["id"]}"]').click()
+        self.page.locator("[data-project-tab=records]").click()
+        self.page.locator("[data-project-record-edit]").click()
+        expect(self.page.get_by_role("button", name="기록 수정", exact=True)).to_be_visible()
+        self.page.locator("[data-rich-editor=content]").fill("Esc로 수정 저장한 기록")
+        self.page.keyboard.press("Escape")
+        expect(self.page.locator(".project-detail-dialog")).to_have_count(0)
+        updated, = self.context.request.get(records_url).json()["items"]
+        self.assertEqual(updated["id"], record["id"])
+        self.assertIn("Esc로 수정 저장한 기록", updated["body"])
+        self.assertNotIn("닫기 버튼으로 자동 저장할 기록", updated["body"])
+
+    def test_project_autosave_blocks_unfinished_images_and_duplicate_submissions(self):
+        project = self.open_project_for_autosave()
+        self.page.locator("[data-project-resource-new]").click()
+        self.page.locator("input[name=title]").fill("업로드와 중복 저장 검증")
+        uploads = []
+        self.page.route("**/api/assets", lambda route: uploads.append(route))
+        self.paste("[data-rich-editor=notes]")
+        self.page.mouse.click(5, 5)
+        expect(self.page.locator("[data-image-upload-feedback]")).to_be_visible()
+        expect(self.page.locator("#project-resource-form")).to_be_visible()
+        self.assertEqual(len(uploads), 1)
+        uploads[0].fulfill(status=503, content_type="application/json", body='{"detail":"test upload failure"}')
+        expect(self.page.locator('[data-image-upload="error"]')).to_be_visible()
+        self.page.mouse.click(5, 5)
+        expect(self.page.locator("#project-resource-form")).to_be_visible()
+        self.page.unroute("**/api/assets")
+        self.page.get_by_role("button", name="다시 시도", exact=True).click()
+        expect(self.page.locator(".editor-rich-image")).to_have_count(1)
+
+        saves = []
+        self.page.route("**/api/meetings", lambda route: saves.append(route))
+        self.page.mouse.click(5, 5)
+        expect(self.page.get_by_role("button", name="저장 중…", exact=True)).to_be_disabled()
+        expect(self.page.locator("[data-project-tab=records]")).to_be_disabled()
+        self.page.mouse.click(5, 5)
+        self.page.keyboard.press("Escape")
+        expect(self.page.locator("#project-resource-form")).to_be_visible()
+        self.assertEqual(len(saves), 1)
+        saves[0].fulfill(response=saves[0].fetch())
+        expect(self.page.locator(".project-detail-dialog")).to_have_count(0)
+        meeting, = self.context.request.get(self.origin + f'/api/meetings?project_id={project["id"]}').json()["items"]
+        self.assertEqual(len(meeting["images"]), 1)
+
     def test_project_meeting_record_and_file_paste(self):
         project = self.context.request.post(self.origin + "/api/projects", data={"name": "이미지 붙여넣기 프로젝트"}).json()
         self.page.goto(self.origin + "/projects")

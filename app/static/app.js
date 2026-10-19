@@ -67,6 +67,7 @@ let projectDetailTab = "meetings";
 let selectedProjectResourceId = null;
 let projectResourceMode = "view";
 let projectInfoEditOpen = false;
+let projectDetailCloseHandler = null;
 let activeImageResize = null;
 let chatWidgetOpen = false;
 let chatSending = false;
@@ -1730,20 +1731,22 @@ async function projectWorkspaceDialog(project) {
 }
 
 function setupProjectWorkspaceDialog(project) {
+  projectDetailCloseHandler = null;
   if (!project) {
     return;
   }
-  document.querySelector(".project-detail-dialog")?.addEventListener("click", (event) => {
+  const dialog = document.querySelector(".project-detail-dialog");
+  let saving = false;
+  dialog.addEventListener("click", (event) => {
     event.stopPropagation();
   });
+  dialog.addEventListener("click", (event) => {
+    if (!saving) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }, true);
   document.querySelectorAll("[data-project-detail-close]").forEach((control) => {
-    control.addEventListener("click", () => {
-      selectedProjectId = null;
-      selectedProjectResourceId = null;
-      projectResourceMode = "view";
-      projectInfoEditOpen = false;
-      renderProjects();
-    });
+    control.addEventListener("click", closeProjectDetailDialog);
   });
   document.querySelectorAll("[data-project-tab]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -1855,21 +1858,70 @@ function setupProjectWorkspaceDialog(project) {
   }
   setupResourceListScroller(document.querySelector(".project-detail-dialog"));
   setupProjectFileUpload(project);
-  setupInlineImageEditors(document.querySelector(".project-detail-dialog"));
-  setupMeetingCompanyFields(document.querySelector(".project-detail-dialog"));
-  document.querySelector("#project-resource-form")?.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    if (projectDetailTab === "files") {
+  setupInlineImageEditors(dialog);
+  setupMeetingCompanyFields(dialog);
+  const formEl = dialog.querySelector("#project-resource-form");
+  const formSnapshot = () => {
+    syncRichTextEditors(formEl);
+    return JSON.stringify([...new FormData(formEl)]);
+  };
+  const initialSnapshot = formEl ? formSnapshot() : null;
+  const active = () => dialog.isConnected && currentRoute() === "projects" && selectedProjectId === project.id;
+  const dismiss = () => {
+    selectedProjectId = null;
+    selectedProjectResourceId = null;
+    projectResourceMode = "view";
+    projectInfoEditOpen = false;
+    renderProjects();
+  };
+  const showFeedback = (message) => {
+    let feedback = formEl.querySelector("[data-project-save-feedback]");
+    if (!feedback) {
+      feedback = document.createElement("p");
+      feedback.dataset.projectSaveFeedback = "";
+      feedback.className = "document-feedback full";
+      feedback.setAttribute("role", "alert");
+      formEl.querySelector(".resource-form-actions").before(feedback);
+    }
+    feedback.textContent = message;
+    feedback.hidden = false;
+    feedback.scrollIntoView({ block: "nearest" });
+  };
+  let closeOnSubmit = false;
+  projectDetailCloseHandler = () => {
+    if (!active() || saving) return;
+    if (formEl?.querySelector("[data-company-save]")?.disabled) {
+      showFeedback("회사 등록이 끝난 뒤 다시 닫아 주세요. 작성 내용은 유지됩니다.");
       return;
     }
-    const formEl = event.currentTarget;
+    if (formEl && (formSnapshot() !== initialSnapshot || formEl.querySelector("[data-image-upload]"))) {
+      // Use normal submission so required fields and unfinished image uploads
+      // keep the editor open instead of silently dropping the current content.
+      closeOnSubmit = true;
+      try { formEl.requestSubmit(); } finally { closeOnSubmit = false; }
+      return;
+    }
+    dismiss();
+  };
+  formEl?.elements.title?.addEventListener("input", () => formEl.elements.title.setCustomValidity(""));
+  formEl?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (saving || !active() || projectDetailTab === "files") return;
+    const closeAfterSave = closeOnSubmit;
     syncRichTextEditors(formEl);
     const form = new FormData(formEl);
     const isEdit = projectResourceMode === "edit" && selectedProjectResourceId;
     const isRecord = projectDetailTab === "records";
     const bodyContent = String(form.get(isRecord ? "content" : "notes") || "");
     if (isRecord && !bodyContent.trim()) {
+      showFeedback("기록 내용을 입력해 주세요. 작성 내용은 유지됩니다.");
       formEl.querySelector("[data-rich-editor='content']")?.focus();
+      return;
+    }
+    const title = String(form.get("title") || "").trim();
+    if (!isRecord && !title) {
+      formEl.elements.title.setCustomValidity("회의명을 입력해 주세요.");
+      formEl.elements.title.reportValidity();
       return;
     }
     const images = imagesReferencedInContent(uniqueImages([...existingFormImages(form), ...uploadedInlineImages(formEl)]), `${form.get("agenda") || ""}\n${bodyContent}`);
@@ -1883,7 +1935,7 @@ function setupProjectWorkspaceDialog(project) {
       : {
           project_id: project.id,
           company_id: form.get("company_id") || "",
-          title: form.get("title"),
+          title,
           date: form.get("date"),
           start_time: String(form.get("start_time") || ""),
           attendees: splitList(form.get("attendees")),
@@ -1898,24 +1950,51 @@ function setupProjectWorkspaceDialog(project) {
       : isEdit
         ? `/api/meetings/${encodeURIComponent(selectedProjectResourceId)}`
         : "/api/meetings";
-    const saved = await api(path, {
-      method: isEdit ? "PATCH" : "POST",
-      body: JSON.stringify(payload),
-    });
-    selectedProjectResourceId = saved.id;
-    projectResourceMode = "view";
-    renderProjects();
+    const submit = formEl.querySelector("[type='submit']");
+    const previousLabel = submit.textContent;
+    const controls = [...dialog.querySelectorAll("button, input, select, textarea")].map((element) => [element, element.disabled]);
+    const editors = [...formEl.querySelectorAll("[data-rich-editor]")];
+    saving = true;
+    controls.forEach(([element]) => { element.disabled = true; });
+    editors.forEach((element) => { element.contentEditable = "false"; });
+    submit.textContent = "저장 중…";
+    const feedback = formEl.querySelector("[data-project-save-feedback]");
+    if (feedback) feedback.hidden = true;
+    try {
+      const saved = await api(path, {
+        method: isEdit ? "PATCH" : "POST",
+        body: JSON.stringify(payload),
+      });
+      if (!active()) return;
+      if (closeAfterSave) {
+        dismiss();
+      } else {
+        selectedProjectResourceId = saved.id;
+        projectResourceMode = "view";
+        renderProjects();
+      }
+    } catch (error) {
+      if (!active()) return;
+      let reason = error.message;
+      try {
+        const detail = JSON.parse(reason).detail;
+        if (typeof detail === "string") reason = detail;
+        else if (Array.isArray(detail)) reason = detail.map((item) => item.msg).join(" ");
+      } catch { /* Network failures already provide a text message. */ }
+      showFeedback(`저장하지 못했습니다. 작성 내용은 유지됩니다. ${reason}`);
+    } finally {
+      saving = false;
+      if (formEl.isConnected) {
+        controls.forEach(([element, disabled]) => { element.disabled = disabled; });
+        editors.forEach((element) => { element.contentEditable = "true"; });
+        submit.textContent = previousLabel;
+      }
+    }
   });
 }
 
 function closeProjectDetailDialog() {
-  if (selectedProjectId) {
-    selectedProjectId = null;
-    selectedProjectResourceId = null;
-    projectResourceMode = "view";
-    projectInfoEditOpen = false;
-    renderProjects();
-  }
+  projectDetailCloseHandler?.();
 }
 
 function setupProjectFileUpload(project) {
