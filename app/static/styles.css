@@ -1541,7 +1541,7 @@ textarea.long-textarea {
   position: relative;
   display: block;
   min-width: 0;
-  height: calc(var(--week-lanes, 0) * 22px);
+  height: calc(var(--day-lanes, 0) * 22px);
 }
 
 .event-chip,
@@ -3002,7 +3002,7 @@ textarea.long-textarea {
   }
 
   .day-range-events {
-    height: calc(var(--week-lanes, 0) * 20px);
+    height: calc(var(--day-lanes, 0) * 20px);
   }
 
   .range-chip {

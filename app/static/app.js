@@ -3967,14 +3967,14 @@ function calendarCells(monthDate, eventsByDate, layout, multiDayLayout, holidays
     const hiddenCount = Math.max(0, singleDayEvents.length - visibleEvents.length);
     const column = (index % 7) + 1;
     const row = Math.floor(index / 7) + 1;
-    const weekLanes = multiDayLayout.weekLaneCounts[row - 1] || 0;
+    const dayLanes = rangeEvents.length ? Math.max(...rangeEvents.map((event) => event.lane)) + 1 : 0;
     cells.push(`
-      <button class="day ${weekendClass} ${holidayName ? "is-holiday" : ""} ${inMonth ? "" : "is-muted"} ${value === selectedCalendarDate ? "is-selected" : ""} ${value === today ? "is-today" : ""}" type="button" data-date="${value}" style="grid-column:${column};grid-row:${row};--week-lanes:${weekLanes};">
+      <button class="day ${weekendClass} ${holidayName ? "is-holiday" : ""} ${inMonth ? "" : "is-muted"} ${value === selectedCalendarDate ? "is-selected" : ""} ${value === today ? "is-today" : ""}" type="button" data-date="${value}" style="grid-column:${column};grid-row:${row};">
         <span class="day-date">
           <span class="day-number">${cellDate.getDate()}</span>
           ${holidayName ? `<span class="day-holiday" title="${escapeHtml(holidayName)}">${escapeHtml(holidayName)}</span>` : ""}
         </span>
-        ${weekLanes ? `<span class="day-range-events" style="--week-lanes:${weekLanes};">${rangeEvents.map(rangeSegmentChip).join("")}</span>` : ""}
+        ${dayLanes ? `<span class="day-range-events" style="--day-lanes:${dayLanes};">${rangeEvents.map(rangeSegmentChip).join("")}</span>` : ""}
         ${
           visibleEvents.length || hiddenCount
             ? `<span class="day-events">

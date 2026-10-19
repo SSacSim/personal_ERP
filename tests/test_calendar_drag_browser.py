@@ -70,6 +70,28 @@ class CalendarDragBrowserTests(unittest.TestCase):
         expect(self.chip(item, "2026-11-03")).to_be_visible()
         self.assertEqual(saved["category"], "연차")
 
+    def test_drag_to_friday_uses_first_slot_when_ranges_end_earlier_in_the_week(self):
+        self.create_event(title="월요일부터 수요일까지", start_date="2026-10-19", end_date="2026-10-21")
+        self.create_event(title="화요일부터 수요일까지", start_date="2026-10-20", end_date="2026-10-21")
+        monday = self.create_event(title="월요일 단일 일정")
+        item = self.create_event(title="금요일로 옮길 일정", start_date="2026-10-22", end_date="2026-10-22")
+        self.open_calendar()
+        self.move(item, "2026-10-22", "2026-10-23")
+        expect(self.page.locator("[data-calendar-drag-feedback]")).to_contain_text("이동했습니다")
+        for width in (1440, 390):
+            with self.subTest(width=width):
+                self.page.set_viewport_size({"width": width, "height": 1000})
+                gap = self.chip(item, "2026-10-23").evaluate("""chip =>
+                    chip.getBoundingClientRect().top - chip.closest('.day').querySelector('.day-date').getBoundingClientRect().bottom
+                """)
+                self.assertGreaterEqual(gap, 0)
+                self.assertLessEqual(gap, 8, "금요일의 첫 일정은 날짜 바로 아래에 빈 줄 없이 표시되어야 합니다.")
+                monday_gap = self.chip(monday, "2026-10-19").evaluate("""chip =>
+                    chip.getBoundingClientRect().top - chip.closest('.day').querySelector('.range-chip').getBoundingClientRect().bottom
+                """)
+                self.assertGreaterEqual(monday_gap, 0)
+                self.assertLessEqual(monday_gap, 8, "월요일에도 다른 날짜에서만 사용 중인 기간 일정 줄을 비워 두지 않아야 합니다.")
+
     def test_same_day_and_external_drop_do_not_save_and_failure_keeps_original(self):
         origin, target = "2026-10-26", "2026-10-29"
         item = self.create_event(start_date=origin, end_date=origin)
