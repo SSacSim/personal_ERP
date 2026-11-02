@@ -155,7 +155,8 @@ class AuthenticationTests(unittest.TestCase):
         member = self.employee()
         self.as_user(member)
         png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII="
-        receipt = self.client.post("/api/receipts", json={"submission_id": str(uuid4()), "registrant": "사칭", "content": "식비", "filename": "receipt.png", "image_base64": png})
+        folder = self.client.post("/api/receipts/folders", json={"name": "식비"}).json()
+        receipt = self.client.post("/api/receipts", json={"submission_id": str(uuid4()), "folder_id": folder["id"], "registrant": "사칭", "content": "식비", "filename": "receipt.png", "image_base64": png})
         self.assertEqual(receipt.status_code, 201, receipt.text)
         self.assertEqual(receipt.json()["registrant"], member["name"])
         self.assertEqual(self.client.get(receipt.json()["image_url"]).content, base64.b64decode(png))

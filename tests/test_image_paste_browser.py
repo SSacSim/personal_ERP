@@ -12,6 +12,7 @@ import sys
 from tempfile import TemporaryDirectory
 import time
 import unittest
+from uuid import uuid4
 from urllib.request import Request, urlopen
 
 try:
@@ -256,10 +257,17 @@ class ImagePasteBrowserTests(unittest.TestCase):
         self.page.goto(self.origin + "/chat")
         self.paste(".tc-compose textarea")
         expect(self.page.locator(".tc-pending-file")).to_have_count(1)
-        self.page.goto(self.origin + "/receipt-upload")
+        folder = self.receipt_folder()
+        self.page.goto(self.origin + f"/receipt-upload?folder_id={folder['id']}")
+        expect(self.page.locator("#receipt-fields")).to_be_enabled()
         self.paste("#content", count=2)
         expect(self.page.locator(".preview-card")).to_have_count(2)
-        expect(self.page.locator("#selection-count")).to_contain_text("2장")
+        expect(self.page.locator("#selection-count")).to_contain_text("2개")
+
+    def receipt_folder(self):
+        response = self.context.request.post(self.origin + "/api/receipts/folders", data={"name": f"출장 {uuid4().hex[:8]}"})
+        self.assertEqual(response.status, 201)
+        return response.json()
 
     def receipt_photos(self):
         photos = []
@@ -278,7 +286,9 @@ class ImagePasteBrowserTests(unittest.TestCase):
             with self.subTest(viewport=width):
                 self.page.set_viewport_size({"width": width, "height": 844})
                 before = self.context.request.get(self.origin + "/api/receipts").json()["total"]
-                self.page.goto(self.origin + "/receipt-upload")
+                folder = self.receipt_folder()
+                self.page.goto(self.origin + f"/receipt-upload?folder_id={folder['id']}")
+                expect(self.page.locator("#receipt-fields")).to_be_enabled()
                 self.page.locator("#image").set_input_files(photos)
                 expect(self.page.locator(".preview-card")).to_have_count(3)
                 self.page.locator("#content").fill(f"사진 3장 묶음 검증 {width}")
@@ -287,15 +297,15 @@ class ImagePasteBrowserTests(unittest.TestCase):
                 self.assertEqual(saved.value.status, 201)
                 record = saved.value.json()
                 self.assertEqual(record["image_count"], 3)
-                expect(self.page.locator("#notice")).to_contain_text("사진 3장이 포함된 영수증 1건")
+                expect(self.page.locator("#notice")).to_contain_text("파일 3개가 포함된 영수증 1건")
                 self.assertEqual(self.context.request.get(self.origin + "/api/receipts").json()["total"], before + 1)
-                self.page.goto(self.origin + "/receipts")
+                self.page.goto(self.origin + f"/receipts?folder_id={folder['id']}")
                 self.page.locator(f'[data-receipt-id="{record["id"]}"] .receipt-open').click()
                 expect(self.page.locator(".receipt-dialog")).to_be_visible()
                 expect(self.page.locator("[data-photo-index]")).to_have_count(3)
                 for index, photo in enumerate(photos):
-                    self.page.get_by_role("button", name=f"사진 {index + 1} 보기", exact=True).click()
-                    expect(self.page.locator("[data-photo-position]")).to_have_text(f"사진 {index + 1} / 3")
+                    self.page.get_by_role("button", name=f"파일 {index + 1} 보기", exact=True).click()
+                    expect(self.page.locator("[data-photo-position]")).to_have_text(f"파일 {index + 1} / 3")
                     expect(self.page.locator(".receipt-detail-photo img")).to_have_attribute("src", record["images"][index]["image_url"])
                     with self.page.expect_download() as downloaded:
                         self.page.locator("[data-photo-download]").click()
@@ -315,9 +325,9 @@ class ImagePasteBrowserTests(unittest.TestCase):
                 expect(self.page.locator("[data-detail-notice]")).to_have_text("저장했습니다.")
                 self.page.locator("[data-edit]").click()
                 self.page.locator("#receipt-photo").set_input_files(photos[:2])
-                expect(self.page.locator("[data-detail-notice]")).to_contain_text("사진 2장으로 전체 교체")
+                expect(self.page.locator("[data-detail-notice]")).to_contain_text("파일 2개로 전체 교체")
                 expect(self.page.locator("[data-save]")).to_be_enabled()
-                self.page.get_by_role("button", name="사진 2 보기", exact=True).click()
+                self.page.get_by_role("button", name="파일 2 보기", exact=True).click()
                 self.assertTrue(self.page.locator(".receipt-detail-photo img").evaluate("async image => { await image.decode(); return image.naturalWidth > 0; }"))
                 self.page.locator("[data-save]").click()
                 expect(self.page.locator("[data-detail-notice]")).to_have_text("저장했습니다.")
@@ -331,7 +341,9 @@ class ImagePasteBrowserTests(unittest.TestCase):
 
     def test_receipt_group_lost_response_retry_keeps_one_record(self):
         before = self.context.request.get(self.origin + "/api/receipts").json()["total"]
-        self.page.goto(self.origin + "/receipt-upload")
+        folder = self.receipt_folder()
+        self.page.goto(self.origin + f"/receipt-upload?folder_id={folder['id']}")
+        expect(self.page.locator("#receipt-fields")).to_be_enabled()
         self.page.locator("#image").set_input_files(self.receipt_photos())
         self.page.locator("#content").fill("응답 유실 재시도 검증")
         saved_ids = []
@@ -344,7 +356,7 @@ class ImagePasteBrowserTests(unittest.TestCase):
         expect(self.page.locator("#notice")).to_contain_text("재시도")
         expect(self.page.locator("#image")).to_be_disabled()
         self.page.get_by_role("button", name="영수증 다시 등록하기", exact=True).click()
-        expect(self.page.locator("#notice")).to_contain_text("사진 3장이 포함된 영수증 1건")
+        expect(self.page.locator("#notice")).to_contain_text("파일 3개가 포함된 영수증 1건")
         listing = self.context.request.get(self.origin + "/api/receipts").json()
         self.assertEqual(listing["total"], before + 1)
         record = next(record for record in listing["items"] if record["id"] == saved_ids[0])

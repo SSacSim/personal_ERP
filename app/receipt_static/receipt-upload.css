@@ -6,6 +6,10 @@ body { margin: 0; line-height: 1.6; }
 .eyebrow { margin: 0 0 8px; color: #23745c; font-size: 12px; font-weight: 700; letter-spacing: 1px; }
 h1 { margin: 0; font-size: 27px; letter-spacing: -1px; }
 .intro { margin: 8px 0 28px; color: #65736a; font-size: 14px; }
+.folder-note { margin: 0 0 24px; padding: 12px 14px; border-radius: 8px; color: #195c48; background: #edf5f0; font-size: 14px; overflow-wrap: anywhere; }
+.preview-pdf { display: grid; place-content: center; justify-items: center; gap: 12px; height: 150px; border-radius: 5px; color: #a33d32; background: #f6f8f7; text-decoration: none; }
+.preview-pdf strong { font-size: 28px; }
+.preview-pdf span { font-size: 12px; }
 fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
 label { display: block; margin: 22px 0 8px; font-size: 14px; font-weight: 650; }
 label:first-child { margin-top: 0; }

@@ -22,12 +22,13 @@ class ReceiptGroupTests(unittest.TestCase):
         self.addCleanup(self.stack.close)
         self.root = Path(self.stack.enter_context(TemporaryDirectory())) / "Receipts"
         self.store = ReceiptStore(self.root)
+        self.folder = self.store.create_folder("출장")
         self.stack.enter_context(patch.object(receipts, "store", self.store))
         self.client = TestClient(app)
         self.stack.callback(self.client.close)
         authorize(self.client, self.stack, self.root.parent)
         self.photos = [("Screenshot.JPG", jpeg_photo() + b"mobile metadata"), ("Screenshot.JPG", PNG), ("third.gif", GIF)]
-        self.metadata = {"submission_id": str(uuid4()), "content": "출장 영수증", "registrant": "다른 이름"}
+        self.metadata = {"submission_id": str(uuid4()), "folder_id": self.folder["id"], "content": "출장 영수증", "registrant": "다른 이름"}
 
     def upload(self, photos=None, metadata=None, url="/api/receipts", method="POST"):
         photos = self.photos if photos is None else photos
@@ -70,23 +71,23 @@ class ReceiptGroupTests(unittest.TestCase):
     def test_concurrent_group_retries_publish_one_complete_receipt(self):
         request_id = uuid4()
         with ThreadPoolExecutor(max_workers=4) as pool:
-            records = list(pool.map(lambda _: ReceiptStore(self.root).create(request_id, "홍길동", "식비", images=self.photos), range(8)))
+            records = list(pool.map(lambda _: ReceiptStore(self.root).create(request_id, "홍길동", "식비", folder_id=self.folder["id"], images=self.photos), range(8)))
         self.assertTrue(all(record == records[0] for record in records))
-        self.assertEqual(len(list(self.root.iterdir())), 1)
+        self.assertEqual(len(list(self.root.iterdir())), 2)
         self.assertEqual(len(list((self.root / request_id.hex).iterdir())), 4)
 
     def test_invalid_groups_never_publish_partial_receipts(self):
         for photos in [[], self.photos * 7, [self.photos[0], ("broken.JPG", b"not an image")], [("empty.jpg", b"")], [("a" * 256, PNG)]]:
             with self.subTest(count=len(photos)):
                 self.assertEqual(self.upload(photos=photos).status_code, 422)
-                self.assertFalse(self.root.exists())
+                self.assertEqual([path.name for path in self.root.iterdir()], [".folders"])
         with patch.object(receipts, "MAX_IMAGE_BYTES", 16):
             self.assertEqual(self.upload().status_code, 422)
         with patch.object(receipts, "MAX_MULTIPART_BYTES", 32):
             self.assertEqual(self.upload().status_code, 413)
         for metadata in [{}, {**self.metadata, "content": " "}, {**self.metadata, "extra": True}]:
             self.assertEqual(self.upload(metadata=metadata).status_code, 422)
-        self.assertFalse(self.root.exists())
+        self.assertEqual([path.name for path in self.root.iterdir()], [".folders"])
 
     def test_content_edit_preserves_all_photos_and_group_replacement_is_complete(self):
         record = self.upload().json()
@@ -119,7 +120,7 @@ class ReceiptGroupTests(unittest.TestCase):
             return write_bytes(path, content)
         with patch.object(Path, "write_bytes", fail_second_write), self.assertRaises(OSError):
             self.upload()
-        self.assertEqual(list(self.root.iterdir()), [])
+        self.assertEqual([path.name for path in self.root.iterdir()], [".folders"])
         record = self.upload().json()
         written = 0
         with patch.object(Path, "write_bytes", fail_second_write), self.assertRaises(OSError):
@@ -137,7 +138,7 @@ class ReceiptGroupTests(unittest.TestCase):
         self.assertEqual(len(list((self.root / record["id"]).iterdir())), 4)
 
     def test_legacy_record_can_be_viewed_edited_and_upgraded(self):
-        record = self.store.create(uuid4(), "홍길동", "기존 영수증", "old.png", PNG)
+        record = self.store.create(uuid4(), "홍길동", "기존 영수증", "old.png", PNG, folder_id=self.folder["id"])
         path = self.root / record["id"] / "receipt.json"
         legacy = json.loads(path.read_text(encoding="utf-8"))
         legacy.pop("images")

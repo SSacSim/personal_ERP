@@ -43,6 +43,7 @@ class Element {
   contains() { return false; }
   focus() { if (!this.disabled) document.activeElement = this; }
   reportValidity() { return true; }
+  reset() {}
   decode() { return Promise.resolve(); }
   addEventListener(name, handler) { this.handlers.set(name, handler); }
   dispatch(name, target = this) { return this.handlers.get(name)?.({ target, preventDefault() {}, stopPropagation() {} }); }
@@ -54,15 +55,15 @@ const settle = () => new Promise((resolve) => setImmediate(resolve));
 const json = (data, status = 200) => new Response(JSON.stringify(data), { status });
 const receipt = (i) => ({ id: `receipt-${i}`, registrant: "홍길동", content: `식비 ${i}`, filename: "photo.JPG", created_at: "2026-10-01T12:00:00+09:00", image_url: `/api/receipts/receipt-${i}/image` });
 
-async function environment(t, count = 1) {
+async function environment(t, count = 1, folderId = "folder-1") {
   const previous = Object.fromEntries(["document", "window", "fetch", "setInterval", "clearInterval", "FileReader"].map((key) => [key, globalThis[key]]));
-  const env = { records: Array.from({ length: count }, (_, i) => receipt(i)), calls: [], confirm: false, intercept: null };
+  const env = { records: Array.from({ length: count }, (_, i) => receipt(i)), folders: [{ id: "folder-1", name: "출장", receipt_count: count, can_upload: true }], calls: [], confirm: false, intercept: null };
   globalThis.document = { body: new Element(), activeElement: null, hidden: false, createElement() {
     const image = new Element();
     image.decode = () => env.failDecode ? Promise.reject(new Error("decode failed")) : Promise.resolve();
     return image;
   } };
-  globalThis.window = { confirm: () => env.confirm };
+  globalThis.window = { confirm: () => env.confirm, location: { search: folderId ? `?folder_id=${folderId}` : "" }, history: { replaceState() {} } };
   globalThis.setInterval = () => 1;
   globalThis.clearInterval = () => {};
   globalThis.FileReader = class {
@@ -76,6 +77,14 @@ async function environment(t, count = 1) {
     if (env.intercept) {
       const response = env.intercept(url, options);
       if (response) return response;
+    }
+    if (url === "/api/receipts/folders") {
+      if (options.method === "POST") {
+        const folder = { id: "new-folder", ...JSON.parse(options.body), receipt_count: 0, can_upload: true };
+        env.folders.push(folder);
+        return json(folder, 201);
+      }
+      return json({ items: env.folders });
     }
     if (options.method === "PATCH") {
       const item = env.records.find((entry) => url.endsWith("/" + entry.id));
@@ -178,15 +187,15 @@ test("each photo in a receipt can be selected and downloaded by its own URL and 
   env.records[0].images = [1, 2, 3].map((index) => ({ filename: `사진${index}.JPG`, image_url: `/api/receipts/receipt-0/images/${index}` }));
   env.container.querySelector("[data-refresh]").dispatch("click");
   await settle();
-  assert.match(env.container.querySelector("tbody").innerHTML, /3장/);
+  assert.match(env.container.querySelector("tbody").innerHTML, /3개/);
   env.open();
-  assert.match(env.detail.querySelector("[data-gallery]").innerHTML, /사진 3 보기/);
+  assert.match(env.detail.querySelector("[data-gallery]").innerHTML, /파일 3 보기/);
   for (const index of [1, 2, 0]) {
     const button = env.detail.querySelector("[data-photo-index]");
     button.dataset.photoIndex = String(index);
     await env.detail.dispatch("click", button);
-    assert.equal(env.detail.querySelector("[data-photo-position]").textContent, `사진 ${index + 1} / 3`);
-    assert.equal(env.detail.querySelector(".receipt-detail-photo img").src, env.records[0].images[index].image_url);
+    assert.equal(env.detail.querySelector("[data-photo-position]").textContent, `파일 ${index + 1} / 3`);
+    assert.ok(env.detail.querySelector(".receipt-detail-photo").innerHTML.includes(env.records[0].images[index].image_url));
     assert.equal(env.detail.querySelector("[data-photo-download]").href, env.records[0].images[index].image_url + "?download=true");
     assert.equal(env.detail.querySelector("[data-photo-download]").download, `사진${index + 1}.JPG`);
   }
@@ -199,7 +208,7 @@ test("all replacement photos are sent together and cancel does not change existi
   const input = env.detail.querySelector("#receipt-photo");
   input.files = [new File(["first"], "first.JPG"), new File(["second"], "second.PNG")];
   await env.detail.dispatch("change", input);
-  assert.match(env.detail.querySelector("[data-gallery]").innerHTML, /사진 2 보기/);
+  assert.match(env.detail.querySelector("[data-gallery]").innerHTML, /파일 2 보기/);
   await env.click("cancel-edit");
   assert.equal(env.writes().length, 0);
   await env.click("edit");
@@ -237,7 +246,7 @@ test("deleting the last receipt on a page returns to the previous populated page
   assert.equal(env.records.length, 24);
   assert.equal(env.container.querySelector("[data-page]").textContent, "1 / 1");
   assert.equal(env.container.querySelector("tbody").querySelectorAll("[data-receipt-id]").length, 24);
-  assert.equal(env.calls.at(-1).url, "/api/receipts?offset=0&limit=24");
+  assert.equal(env.calls.at(-1).url, "/api/receipts?offset=0&limit=24&folder_id=folder-1");
 });
 
 test("a save response arriving after navigation does not reopen the old dialog", async (t) => {

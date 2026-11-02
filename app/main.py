@@ -46,6 +46,7 @@ app.include_router(pomodoro.router)
 def ensure_vault() -> None:
     auth.store.ensure()
     vault.ensure()
+    receipts.store.ensure_folders()
     admin = next(user for user in auth.store.list_users() if user["login_id"] == "admin")
     vault.migrate_private_notes(admin["id"])
     vault.migrate_project_meeting_companies()

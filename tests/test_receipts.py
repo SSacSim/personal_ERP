@@ -35,6 +35,7 @@ class ReceiptTests(unittest.TestCase):
         self.addCleanup(self.stack.close)
         self.root = Path(self.stack.enter_context(TemporaryDirectory())) / "Receipts"
         self.store = ReceiptStore(self.root)
+        self.folder = self.store.create_folder("팀 회의")
         self.stack.enter_context(patch.object(receipts, "store", self.store))
         # Exercise the real routes without startup touching unrelated live stores.
         self.erp = TestClient(erp_app)
@@ -43,7 +44,7 @@ class ReceiptTests(unittest.TestCase):
 
     def payload(self, **changes):
         return {
-            "submission_id": str(uuid4()), "registrant": "홍길동", "content": "팀 회의 식비\n참석자 3명",
+            "submission_id": str(uuid4()), "folder_id": self.folder["id"], "registrant": "홍길동", "content": "팀 회의 식비\n참석자 3명",
             "filename": "영수증.png", "image_base64": base64.b64encode(PNG).decode(), **changes,
         }
 
@@ -128,7 +129,7 @@ class ReceiptTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 422, response.text)
                 self.assertEqual(self.store.list(0, 24)["items"], [original])
                 self.assertEqual(self.erp.get(original["image_url"]).content, PNG)
-        self.assertEqual(list(self.root.iterdir()), [self.root / original["id"]])
+        self.assertEqual({path.name for path in self.root.iterdir()}, {".folders", original["id"]})
 
     def test_registration_page_and_assets_share_the_erp_origin(self):
         page = self.erp.get("/receipt-upload")
@@ -160,11 +161,11 @@ class ReceiptTests(unittest.TestCase):
     def test_concurrent_retries_commit_one_complete_folder(self):
         submission_id = uuid4()
         def save(_):
-            return ReceiptStore(self.root).create(submission_id, "동료", "식비", "사진.png", PNG)
+            return ReceiptStore(self.root).create(submission_id, "동료", "식비", "사진.png", PNG, folder_id=self.folder["id"])
         with ThreadPoolExecutor(max_workers=6) as pool:
             records = list(pool.map(save, range(12)))
         self.assertTrue(all(record == records[0] for record in records))
-        self.assertEqual(len(list(self.root.iterdir())), 1)
+        self.assertEqual(len(list(self.root.iterdir())), 2)
         self.assertEqual(self.store.list(0, 24)["total"], 1)
 
     def test_newest_first_pagination_and_same_filename_does_not_overwrite(self):
@@ -188,7 +189,7 @@ class ReceiptTests(unittest.TestCase):
                 response = self.erp.post("/api/receipts", json=self.payload(**changes))
                 self.assertEqual(response.status_code, 422, response.text)
         self.assertEqual(self.store.list(0, 24)["total"], 0)
-        self.assertFalse(self.root.exists())
+        self.assertEqual([path.name for path in self.root.iterdir()], [".folders"])
 
     def test_request_size_limit_and_unsupported_content_type(self):
         with patch.object(receipts, "MAX_REQUEST_BYTES", 32):
@@ -196,13 +197,13 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual(response.status_code, 413)
         self.assertEqual(self.erp.post("/api/receipts", content="not-json").status_code, 415)
         self.assertEqual(self.erp.post("/api/receipts", content="{", headers={"Content-Type": "application/json"}).status_code, 422)
-        self.assertFalse(self.root.exists())
+        self.assertEqual([path.name for path in self.root.iterdir()], [".folders"])
 
     def test_failed_disk_write_does_not_publish_partial_receipt(self):
         with patch.object(Path, "write_text", side_effect=OSError("disk full")):
             with self.assertRaises(OSError):
-                self.store.create(uuid4(), "홍길동", "식비", "사진.png", PNG)
-        self.assertEqual(list(self.root.iterdir()), [])
+                self.store.create(uuid4(), "홍길동", "식비", "사진.png", PNG, folder_id=self.folder["id"])
+        self.assertEqual([path.name for path in self.root.iterdir()], [".folders"])
         self.assertEqual(self.store.list(0, 24)["total"], 0)
 
     def test_filename_and_missing_ids_cannot_access_outside_receipt_folder(self):

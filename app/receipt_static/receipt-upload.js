@@ -1,4 +1,4 @@
-import { submitReceiptBatch } from "./receipt-batch.js?v=20261001-group";
+import { submitReceiptBatch } from "./receipt-batch.js?v=20261102-receipt-workflow";
 import { requireSession, setupAccountBar } from "/static/auth-state.js";
 import { clipboardImage, pastedImages } from "/static/remote-work-inputs.js";
 
@@ -24,6 +24,9 @@ const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "
 let entries = [];
 let sending = false;
 let submission = { id: newId() };
+let folder = null;
+const folderId = new URLSearchParams(window.location.search).get("folder_id");
+const isPdf = (file) => /\.pdf$/i.test(file.name);
 
 // Works on a phone opening the server's LAN address over HTTP, too.
 function newId() {
@@ -45,18 +48,18 @@ function clearPreview() {
   entries = [];
   preview.textContent = "";
   preview.hidden = true;
-  selectionCount.textContent = "선택한 사진 0장";
+  selectionCount.textContent = "선택한 파일 0개";
 }
 
 function updateControls() {
   const started = !!submission.details;
-  fields.disabled = sending;
+  fields.disabled = sending || !folder;
   imageInput.disabled = started;
   registrant.readOnly = true;
   content.readOnly = started;
   retryHint.hidden = !started || sending;
-  submitButton.disabled = sending || !entries.length || entries.some((entry) => entry.invalid);
-  submitButton.textContent = sending ? "등록 중…" : started ? "영수증 다시 등록하기" : entries.length ? `사진 ${entries.length}장으로 영수증 1건 등록하기` : "영수증 등록하기";
+  submitButton.disabled = sending || !folder || !entries.length || entries.some((entry) => entry.invalid);
+  submitButton.textContent = sending ? "등록 중…" : started ? "영수증 다시 등록하기" : entries.length ? `파일 ${entries.length}개로 영수증 1건 등록하기` : "영수증 등록하기";
   newButton.disabled = sending;
 }
 
@@ -67,7 +70,7 @@ function selectionState(entry) {
 }
 
 function updateSelections() {
-  selectionCount.textContent = `선택한 사진 ${entries.length}장 · 영수증 1건으로 등록`;
+  selectionCount.textContent = `선택한 파일 ${entries.length}개 · 영수증 1건으로 등록`;
   for (const entry of entries) {
     const card = preview.querySelector(`[data-entry-id="${entry.id}"]`);
     if (!card) continue;
@@ -83,7 +86,7 @@ function renderSelections() {
   preview.hidden = !entries.length;
   preview.innerHTML = entries.map((entry) => {
     return `<div class="preview-card${entry.invalid ? " is-invalid" : ""}" data-entry-id="${entry.id}" data-status="${entry.status}">
-      <img src="${escape(entry.previewUrl)}" alt="${escape(entry.file.name)} 미리보기" loading="lazy" />
+      ${isPdf(entry.file) ? `<a class="preview-pdf" href="${escape(entry.previewUrl)}" target="_blank" rel="noopener noreferrer" aria-label="${escape(entry.file.name)} PDF 미리보기"><strong>PDF</strong><span>미리보기 ↗</span></a>` : `<img src="${escape(entry.previewUrl)}" alt="${escape(entry.file.name)} 미리보기" loading="lazy" />`}
       <p class="preview-filename" title="${escape(entry.file.name)}">${escape(entry.file.name)}</p>
       <p class="preview-size">${Math.max(1, Math.ceil(entry.file.size / 1024)).toLocaleString("ko-KR")} KB</p>
       <p class="preview-state">${escape(selectionState(entry))}</p>
@@ -94,7 +97,7 @@ function renderSelections() {
 }
 
 function finishBatch(count) {
-  message(`사진 ${count}장이 포함된 영수증 1건이 등록되었습니다.\nERP의 ‘영수증’ 탭에서 사진별로 보거나 다운로드할 수 있습니다.`);
+  message(`파일 ${count}개가 포함된 영수증 1건이 ‘${folder.name}’ 폴더에 등록되었습니다.\nERP의 ‘영수증’ 탭에서 파일별로 보거나 다운로드할 수 있습니다.`);
   form.hidden = true;
   newButton.hidden = false;
   progressArea.hidden = true;
@@ -120,21 +123,21 @@ form.addEventListener("paste", (event) => {
 });
 
 function addPhotos(files) {
-  if (sending || submission.details || !files.length) return;
+  if (!folder || sending || submission.details || !files.length) return;
   const errors = [];
   for (const file of files) {
     // Browsers may report JPEGs as image/jpg or application/octet-stream.
     // Check the extension here; preview decoding and the server check the image bytes.
-    if (!/\.(jpe?g|png|webp|gif)$/i.test(file.name) || file.size === 0 || file.size > 10 * 1024 * 1024) {
-      errors.push(`${file.name}: 10MB 이하의 JPG, PNG, WEBP, GIF 사진을 선택해 주세요.`);
+    if (!/\.(jpe?g|png|webp|gif|pdf)$/i.test(file.name) || file.size === 0 || file.size > 10 * 1024 * 1024) {
+      errors.push(`${file.name}: 10MB 이하의 JPG, PNG, WEBP, GIF, PDF 파일을 선택해 주세요.`);
       continue;
     }
     if (file.name.length > 255) { errors.push(`${file.name}: 파일 이름을 255자 이내로 줄여 주세요.`); continue; }
     if (entries.some((entry) => entry.file.name === file.name && entry.file.size === file.size && entry.file.lastModified === file.lastModified)) {
-      errors.push(`${file.name}: 이미 선택한 사진입니다.`);
+      errors.push(`${file.name}: 이미 선택한 파일입니다.`);
       continue;
     }
-    if (entries.length >= maxPhotos) { errors.push(`한 번에 최대 ${maxPhotos}장까지 선택할 수 있습니다.`); break; }
+    if (entries.length >= maxPhotos) { errors.push(`한 번에 최대 ${maxPhotos}개까지 선택할 수 있습니다.`); break; }
     entries.push({ id: newId(), file, previewUrl: URL.createObjectURL(file), status: "ready", invalid: false, error: "" });
   }
   renderSelections();
@@ -181,21 +184,21 @@ async function uploadReceipt(body) {
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (sending || !form.reportValidity()) return;
+  if (!folder || sending || !form.reportValidity()) return;
   const name = registrant.value.trim();
   const text = content.value.trim();
-  if (!name || !text || !entries.length) { message("사진, 등록자, 내용을 모두 입력해 주세요.", true); return; }
+  if (!name || !text || !entries.length) { message("영수증 파일, 등록자, 내용을 모두 입력해 주세요.", true); return; }
   if (entries.some((entry) => entry.invalid)) { message("열 수 없는 사진을 목록에서 제외한 뒤 등록해 주세요.", true); return; }
   sending = true;
   newButton.hidden = true;
   progressArea.hidden = false;
   progress.removeAttribute("value");
-  progressLabel.textContent = `사진 ${entries.length}장을 영수증 1건으로 등록 중`;
+  progressLabel.textContent = `파일 ${entries.length}개를 영수증 1건으로 등록 중`;
   entries.forEach((entry) => { entry.status = "sending"; entry.error = ""; });
   message("");
   updateSelections();
   try {
-    await submitReceiptBatch(entries, { registrant: name, content: text }, submission, uploadReceipt);
+    await submitReceiptBatch(entries, { folder_id: folder.id, registrant: name, content: text }, submission, uploadReceipt);
     finishBatch(entries.length);
   } catch (error) {
     const reason = error.name === "AbortError" ? "응답이 지연되었습니다. 다시 등록하면 저장 여부를 확인합니다." : error.message || "서버에 연결하지 못했습니다.";
@@ -226,6 +229,25 @@ newButton.addEventListener("click", () => {
   imageInput.focus();
 });
 updateControls();
+try {
+  if (!folderId) throw new Error("영수증 폴더에 먼저 들어간 뒤 ‘영수증 등록’을 눌러 주세요.");
+  const response = await fetch("/api/receipts/folders", { cache: "no-store" });
+  if (!response.ok) throw new Error("등록 폴더를 확인하지 못했습니다. 폴더 목록에서 다시 시도해 주세요.");
+  const data = await response.json();
+  folder = data.items.find((item) => item.id === folderId);
+  if (!folder) throw new Error("등록할 수 있는 폴더가 아닙니다. 폴더 목록에서 다시 선택해 주세요.");
+  document.querySelector("#receipt-folder").textContent = `등록 폴더: ${folder.name}`;
+  const link = document.querySelector("#receipt-list-link");
+  link.href = `/receipts?folder_id=${encodeURIComponent(folder.id)}`;
+  link.textContent = "이 폴더의 영수증 목록으로";
+  if (!folder.can_upload) throw new Error("완료된 폴더에는 영수증을 등록할 수 없습니다. 폴더 상태를 진행으로 변경하거나 다른 폴더를 선택해 주세요.");
+  updateControls();
+} catch (error) {
+  folder = null;
+  form.hidden = true;
+  document.querySelector("#receipt-folder").textContent = "등록 폴더를 선택해 주세요.";
+  message(error.message || "폴더 목록에서 다시 시도해 주세요.", true);
+}
 window.addEventListener("beforeunload", (event) => {
   if (sending) { event.preventDefault(); event.returnValue = ""; }
 });

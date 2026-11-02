@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { submitReceiptBatch } from "../app/receipt_static/receipt-batch.js";
 
-const details = { registrant: "홍길동", content: "출장 영수증" };
+const details = { folder_id: "travel-folder", registrant: "홍길동", content: "출장 영수증" };
 const receipt = (id) => ({ file: new File([id], `${id}.JPG`, { type: "image/jpg" }) });
 
 test("three photos are sent in one request as original files in selection order", async () => {
@@ -47,4 +47,18 @@ test("retrying a lost response does not create a second receipt", async () => {
   assert.deepEqual(await submitReceiptBatch(entries, details, submission, upload), { id: "stable-id", image_count: 3 });
   assert.equal(server.size, 1);
   await submitReceiptBatch(entries, details, submission, () => { assert.fail("completed receipts must not be uploaded again"); });
+});
+
+test("registration without a folder is blocked before sending any files", async () => {
+  await assert.rejects(submitReceiptBatch([receipt("one")], { content: "식비" }, { id: "new" }, () => assert.fail("upload must be blocked")), /폴더/);
+});
+
+test("a failed request keeps its original folder when retried from another folder", async () => {
+  const submission = { id: "stable-folder" };
+  const entries = [receipt("one")];
+  await assert.rejects(submitReceiptBatch(entries, details, submission, async () => { throw new Error("timeout"); }));
+  await submitReceiptBatch(entries, { ...details, folder_id: "different-folder" }, submission, async (body) => {
+    assert.equal(JSON.parse(body.get("metadata")).folder_id, details.folder_id);
+    return { id: "stable-folder" };
+  });
 });
